@@ -66,6 +66,51 @@ def create_session(name: str, context: Optional[str] = None) -> SessionMetadata:
     return metadata
 
 
+def archive_legacy_sessions() -> int:
+    """Move legacy (schema_version < 2) sessions to sessions_legacy/.
+
+    A session is legacy if its metadata is missing schema_version, or if any
+    storyboard JSON in the session contains the removed `image_slot_end`
+    field. Idempotent: already-archived dirs are skipped.
+
+    Called once on app startup.
+    """
+    from models.session import SCHEMA_VERSION
+
+    legacy_root = SESSIONS_DIR.parent / "sessions_legacy"
+    legacy_root.mkdir(exist_ok=True)
+    moved = 0
+    for path in SESSIONS_DIR.iterdir():
+        if not path.is_dir():
+            continue
+        meta_file = path / "metadata.json"
+        if not meta_file.exists():
+            continue
+        try:
+            data = json.loads(meta_file.read_text())
+        except Exception:
+            continue
+        version = int(data.get("schema_version") or 1)
+        is_legacy = version < SCHEMA_VERSION
+        if not is_legacy:
+            sb = path / "storyboard_approved.json"
+            if sb.exists():
+                try:
+                    sb_data = json.loads(sb.read_text())
+                    scenes = sb_data.get("scenes") or []
+                    if any("image_slot_end" in (s or {}) for s in scenes):
+                        is_legacy = True
+                except Exception:
+                    pass
+        if is_legacy:
+            dest = legacy_root / path.name
+            if dest.exists():
+                continue
+            shutil.move(str(path), str(dest))
+            moved += 1
+    return moved
+
+
 def get_session(session_id: str) -> SessionMetadata:
     path = _metadata_path(session_id)
     if not path.exists():
@@ -201,6 +246,73 @@ def approve_last_asset_card(session_id: str, subtype: str) -> None:
             msg["status"] = "approved"
             break
     _write_chat(session_id, history)
+
+
+def _asset_identity(data: dict, identity: Optional[dict]) -> bool:
+    if not identity:
+        return True
+    for key, value in identity.items():
+        if data.get(key) != value:
+            return False
+    return True
+
+
+def mark_asset_card_approved(
+    session_id: str,
+    subtype: str,
+    iteration: int,
+    identity: Optional[dict] = None,
+) -> None:
+    """Make exactly one matching asset card active-approved; older approved cards become previous."""
+    history = get_chat_history(session_id)
+    for msg in history.messages:
+        if msg.get("msg_type") != "asset_card" or msg.get("subtype") != subtype:
+            continue
+        if not _asset_identity(msg.get("data") or {}, identity):
+            continue
+        if int(msg.get("iteration", 0)) == int(iteration):
+            msg["status"] = "approved"
+        elif msg.get("status") == "approved":
+            msg["status"] = "previous"
+    _write_chat(session_id, history)
+
+
+def mark_asset_cards_previous_from(
+    session_id: str,
+    subtypes: set[str],
+    identity: Optional[dict] = None,
+) -> None:
+    history = get_chat_history(session_id)
+    changed = False
+    for msg in history.messages:
+        if msg.get("msg_type") != "asset_card" or msg.get("subtype") not in subtypes:
+            continue
+        if identity and not _asset_identity(msg.get("data") or {}, identity):
+            continue
+        if msg.get("status") in {"approved", "pending_approval"}:
+            msg["status"] = "previous"
+            changed = True
+    if changed:
+        _write_chat(session_id, history)
+
+
+def mark_pending_asset_cards_previous_from(
+    session_id: str,
+    subtypes: set[str],
+    identity: Optional[dict] = None,
+) -> None:
+    history = get_chat_history(session_id)
+    changed = False
+    for msg in history.messages:
+        if msg.get("msg_type") != "asset_card" or msg.get("subtype") not in subtypes:
+            continue
+        if identity and not _asset_identity(msg.get("data") or {}, identity):
+            continue
+        if msg.get("status") == "pending_approval":
+            msg["status"] = "previous"
+            changed = True
+    if changed:
+        _write_chat(session_id, history)
 
 
 def save_asset(session_id: str, relative_path: str, data: bytes) -> Path:

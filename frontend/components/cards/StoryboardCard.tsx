@@ -40,6 +40,14 @@ export function StoryboardCard({ data, iteration, status, sessionId, onAction }:
     } finally { setLoading(false); }
   };
 
+  const handleRestore = async () => {
+    setLoading(true);
+    try {
+      await api.sendAction(sessionId, "restore", "storyboard", { version: iteration });
+      onAction?.();
+    } finally { setLoading(false); }
+  };
+
   return (
     <div className="bg-zinc-800/60 border border-zinc-700 rounded-xl p-4 max-w-3xl w-full">
       <div className="flex items-center justify-between mb-3">
@@ -54,7 +62,7 @@ export function StoryboardCard({ data, iteration, status, sessionId, onAction }:
               <th className="text-left pb-2 pr-3 w-16">Time</th>
               <th className="text-left pb-2 pr-3 w-8">Scene</th>
               <th className="text-left pb-2 pr-3">Voiceover</th>
-              <th className="text-left pb-2 pr-3">Images</th>
+              <th className="text-left pb-2 pr-3">Image</th>
               <th className="text-left pb-2">Transition</th>
             </tr>
           </thead>
@@ -68,22 +76,47 @@ export function StoryboardCard({ data, iteration, status, sessionId, onAction }:
                   <td className="py-2 pr-3 text-zinc-400 whitespace-nowrap">{s.start_time.toFixed(1)}–{s.end_time.toFixed(1)}s</td>
                   <td className="py-2 pr-3 text-zinc-300 font-mono">{s.scene_id}</td>
                   <td className="py-2 pr-3 text-zinc-200">{s.voiceover_words ?? s.voiceover_text}</td>
-                  <td className="py-2 pr-3 text-zinc-400 whitespace-nowrap font-mono">{s.image_slot_start}→{s.image_slot_end}</td>
-                  <td className="py-2 text-zinc-500">{s.transition_out} {s.transition_duration_seconds}s</td>
+                  <td className="py-2 pr-3 text-zinc-400 whitespace-nowrap font-mono">{s.image_slot}</td>
+                  <td className="py-2 text-zinc-500">{typeof s.transition_out === 'object' ? s.transition_out.type : s.transition_out} {typeof s.transition_out === 'object' ? s.transition_out.duration_seconds : s.transition_duration_seconds}s</td>
                 </tr>
                 {expandedRows.has(s.scene_id) && (
                   <tr key={`${s.scene_id}-expand`} className="bg-zinc-900/40">
-                    <td colSpan={5} className="px-2 py-2 text-zinc-300 text-xs leading-relaxed whitespace-pre-wrap">
-                      {(s.shot_type || s.camera_motion) && (
-                        <div className="mb-2 text-zinc-400">
-                          {s.script_part && <span className="uppercase">{s.script_part}</span>}
-                          {s.script_part && " · "}
-                          {s.shot_type} {s.camera_motion}
-                        </div>
+                    <td colSpan={5} className="px-2 py-2 text-zinc-300 text-xs leading-relaxed space-y-1">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="text-zinc-400 font-mono">{s.shot_type} · {s.camera_motion}</span>
+                        {s.image_description?.camera_angle && (
+                          <span className="px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-300 text-[10px] font-mono">{s.image_description.camera_angle}</span>
+                        )}
+                        {s.era_year != null && (
+                          <span className="px-1.5 py-0.5 rounded bg-zinc-800 text-amber-300 text-[10px] font-mono">era {s.era_year}</span>
+                        )}
+                        {s.face_reference_mode && (
+                          <span className="px-1.5 py-0.5 rounded bg-zinc-800 text-indigo-300 text-[10px] font-mono">
+                            face: {s.face_reference_mode}
+                            {s.face_reference_mode === "age_down_to" && s.face_reference_target_age != null ? ` → ${s.face_reference_target_age}` : ""}
+                          </span>
+                        )}
+                      </div>
+                      {(s.setting_category || s.location_anchor) && (
+                        <div className="text-zinc-400"><span className="text-zinc-500">Setting: </span>{s.setting_category} — {s.location_anchor}</div>
                       )}
-                      <div>{s.visual_description}</div>
-                      {s.visual_narration_check && (
-                        <div className="mt-2 text-zinc-400">Adds: {s.visual_narration_check}</div>
+                      {s.visual_beat && (
+                        <div className="text-zinc-300"><span className="text-zinc-500">Beat: </span>{s.visual_beat}</div>
+                      )}
+                      {s.image_description?.subject_and_pose && (
+                        <div className="text-zinc-400"><span className="text-zinc-500">Frame: </span>{s.image_description.subject_and_pose} · {s.image_description.environment}</div>
+                      )}
+                      {s.image_description?.era_constraints && (
+                        <div className="text-zinc-400"><span className="text-zinc-500">Era constraints: </span>{s.image_description.era_constraints}</div>
+                      )}
+                      {s.subject_life_stage && (
+                        <div className="text-zinc-400"><span className="text-zinc-500">Age: </span>{s.subject_life_stage}{s.age_continuity_note ? ` — ${s.age_continuity_note}` : ''}</div>
+                      )}
+                      {s.motion_arc && (
+                        <div className="text-zinc-400">
+                          <span className="text-zinc-500">Motion: </span>
+                          {[s.motion_arc.camera_move, s.motion_arc.subject_action, s.motion_arc.traversal].filter(Boolean).join(" · ")}
+                        </div>
                       )}
                     </td>
                   </tr>
@@ -94,7 +127,11 @@ export function StoryboardCard({ data, iteration, status, sessionId, onAction }:
         </table>
       </div>
 
-      {!approved && onAction !== undefined && (
+      {data.cost_summary && (
+        <div className="mt-3 text-[11px] text-zinc-400">Cost: ${data.cost_summary.total_usd.toFixed(4)}</div>
+      )}
+
+      {onAction !== undefined && (
         <div className="mt-4 space-y-2">
           {showChange ? (
             <div className="space-y-2">
@@ -110,7 +147,7 @@ export function StoryboardCard({ data, iteration, status, sessionId, onAction }:
                     if (!feedback.trim()) return;
                     setLoading(true);
                     try {
-                      await api.sendAction(sessionId, "change", "storyboard", { feedback });
+                      await api.sendAction(sessionId, "change", "storyboard", { feedback, version: iteration });
                       setFeedback(""); setShowChange(false); onAction?.();
                     } finally { setLoading(false); }
                   }}
@@ -122,13 +159,14 @@ export function StoryboardCard({ data, iteration, status, sessionId, onAction }:
             </div>
           ) : (
             <div className="flex gap-2">
-              <button onClick={handleApprove} disabled={loading} className="px-4 py-2 bg-green-700 hover:bg-green-600 disabled:opacity-50 text-white rounded-lg text-sm font-medium">Approve</button>
+              {!approved && <button onClick={status === "previous" ? handleRestore : handleApprove} disabled={loading} className="px-4 py-2 bg-green-700 hover:bg-green-600 disabled:opacity-50 text-white rounded-lg text-sm font-medium">{status === "previous" ? "Use this version" : "Approve"}</button>}
               <button onClick={() => setShowChange(true)} className="px-4 py-2 bg-zinc-700 hover:bg-zinc-600 text-white rounded-lg text-sm">Change</button>
             </div>
           )}
         </div>
       )}
       {approved && <div className="mt-3 text-green-400 text-xs font-medium">✓ Approved</div>}
+      {status === "previous" && <div className="mt-3 text-zinc-500 text-xs font-medium">Previous version</div>}
     </div>
   );
 }

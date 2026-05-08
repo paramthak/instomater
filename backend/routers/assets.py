@@ -38,7 +38,7 @@ async def get_asset(session_id: str, asset_path: str):
     content_type = _CONTENT_TYPES.get(ext, "application/octet-stream")
 
     # For final reel downloads, set Content-Disposition
-    headers = {}
+    headers = {"Cache-Control": "no-store, max-age=0"}
     if "final/" in asset_path and asset_path.endswith(".mp4"):
         filename = file_path.name
         headers["Content-Disposition"] = f'attachment; filename="{filename}"'

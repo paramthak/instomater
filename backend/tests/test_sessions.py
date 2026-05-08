@@ -17,7 +17,7 @@ def test_create_session(client):
     data = resp.json()
     assert data["person_name"] == "Sundar Pichai"
     assert data["session_id"]
-    assert data["current_stage"] == "topic_brief"
+    assert data["current_stage"] == "script"
 
 
 def test_create_session_name_too_short(client):

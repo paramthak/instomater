@@ -9,6 +9,7 @@ interface Props {
     image_path: string;
     image_index: number;
     total_images: number;
+    cost_summary?: { total_usd: number };
   };
   iteration: number;
   status: string;
@@ -28,6 +29,14 @@ export function ImageCard({ data, iteration, status, sessionId, onAction }: Prop
     setLoading(true);
     try {
       await api.sendAction(sessionId, "approve", "image_generation", { image_index: data.image_index });
+      onAction?.();
+    } finally { setLoading(false); }
+  };
+
+  const handleRestore = async () => {
+    setLoading(true);
+    try {
+      await api.sendAction(sessionId, "restore", "image_generation", { image_index: data.image_index, version: iteration });
       onAction?.();
     } finally { setLoading(false); }
   };
@@ -52,7 +61,11 @@ export function ImageCard({ data, iteration, status, sessionId, onAction }: Prop
           </div>
         </div>
 
-        {!approved && onAction !== undefined && (
+        {data.cost_summary && (
+          <div className="px-3 pt-2 text-[11px] text-zinc-400">Cost: ${data.cost_summary.total_usd.toFixed(4)}</div>
+        )}
+
+        {onAction !== undefined && (
           <div className="p-3 space-y-2">
             {showChange ? (
               <div className="space-y-2">
@@ -80,7 +93,7 @@ export function ImageCard({ data, iteration, status, sessionId, onAction }: Prop
               </div>
             ) : (
               <div className="flex gap-2">
-                <button onClick={handleApprove} disabled={loading} className="flex-1 py-2 bg-green-700 hover:bg-green-600 disabled:opacity-50 text-white rounded text-xs font-medium">Approve</button>
+                {!approved && <button onClick={status === "previous" ? handleRestore : handleApprove} disabled={loading} className="flex-1 py-2 bg-green-700 hover:bg-green-600 disabled:opacity-50 text-white rounded text-xs font-medium">{status === "previous" ? "Use this version" : "Approve"}</button>}
                 <button onClick={() => setShowChange(true)} className="flex-1 py-2 bg-zinc-700 hover:bg-zinc-600 text-white rounded text-xs">Change</button>
               </div>
             )}
@@ -88,6 +101,9 @@ export function ImageCard({ data, iteration, status, sessionId, onAction }: Prop
         )}
         {approved && (
           <div className="px-3 py-2 text-green-400 text-xs font-medium">✓ Approved</div>
+        )}
+        {status === "previous" && (
+          <div className="px-3 py-2 text-zinc-500 text-xs font-medium">Previous version</div>
         )}
       </div>
 

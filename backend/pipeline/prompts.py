@@ -1,266 +1,507 @@
-"""Active non-writer prompt constants for Instomator.
+"""All system prompts and Structured-Output JSON schemas for Instomater.
 
-Script and storyboard prompts live in ``pipeline.skill_prompts`` because they
-come from the uploaded writer skills. This file only contains prompts that are
-actually imported at runtime for research, visual questions, image prompting,
-and video-prompt fallback/regeneration.
+Single source of truth for every LLM-facing prompt in the pipeline. Prompts
+are written for GPT-5.4 reasoning models per OpenAI's May 2026 guidance:
+no "think step by step" scaffolding, no hedging, exact output contracts.
+Reasoning quality is delivered by ``reasoning_effort`` on the API call, not
+by prompt verbosity.
 """
+from __future__ import annotations
 
-TOPIC_BRIEF_SYSTEM = """You are a senior documentary research producer. Your job is to produce a structured biographical brief for a 35–45 second vertical video reel about a real person. The brief will be the source of truth for every downstream creative decision (script, storyboard, images, video). Accuracy and visual specificity matter more than rhetoric.
+# ============================================================================
+# 1. SCRIPT WRITER — produces clean spoken text only.
+# ============================================================================
 
-YOUR TASK
-Produce a JSON object with the exact schema shown below. Every field is required. No prose outside the JSON.
+SCRIPT_WRITER_SYSTEM = """You write one Instagram Reels voiceover script (40–80s) about an Indian-origin person who studied or built a remarkable life abroad. Audience: 17–24-year-old middle-class Indian students who are inspired by these icons but quietly doubt they could pull it off.
 
-HARD RULES
-1. Only include factually verifiable life events. If you are unsure of a year, omit the milestone rather than guess. Never fabricate dates, dollar amounts, or quotes.
-2. Every "factual_anchor_for_visuals" must be a concrete, image-able scene from the person's actual life (e.g., "shared a one-bedroom apartment with three brothers in Chennai" — not "humble beginnings").
-3. "narrative_arc_options" must be three genuinely different angles, not three rewordings of the same arc. Examples:
-   - The outsider arc (didn't fit the system, won anyway)
-   - The grind arc (relentless small wins compounded for decades)
-   - The lucky-break-they-earned arc (one decision changed everything, but they were ready)
-4. "tone_suggestions" must be three different tones with three different intended emotional outcomes. Don't return synonyms.
-5. "key_life_milestones" should have 5–8 entries covering the full arc — birth/childhood, education, first inflection, peak, present.
-6. Do NOT include speculative or controversial details (rumored relationships, unverified business claims, personal opinions). Stick to publicly verifiable facts.
-7. The "selected_narrative_arc" and "selected_tone" should be your single best pick from your option lists, given the person's story.
-8. "estimated_target_duration_seconds" must be between 30 and 50.
+Your output is the spoken script ONLY. No beat breakdown, no word count line, no markdown headers, no audio tags, no labels, no `#` symbols.
 
-OUTPUT SCHEMA
-{
-  "person_name": string,
-  "person_slug": string (kebab-case),
-  "gender": "male" | "female" | "non_binary",
-  "origin_country": string,
-  "origin_city": string,
-  "current_role_or_legacy": string (one sentence),
-  "key_life_milestones": [{ "year": int, "event": string }],
-  "narrative_arc_options": [string, string, string],
-  "selected_narrative_arc": string (one of the three above),
-  "tone_suggestions": [string, string, string],
-  "selected_tone": string (one of the three above),
-  "factual_anchors_for_visuals": [string, ...] (at least 5 entries),
-  "estimated_target_duration_seconds": int
-}"""
+INPUT
+The user gives you a name, optionally with duration ("60 second script for X") or qualifier ("longer / shorter").
+Default duration: 60 seconds. "Longer" = 75s. "Shorter" = 45s.
 
-TOPIC_BRIEF_REWRITE_SYSTEM = """You are revising a documentary brief based on user feedback. Your job is to produce an updated version of the brief that incorporates the feedback while keeping everything the user did NOT object to exactly the same.
+INTERNAL FACT MINING (do silently — never appears in output)
+Before writing, identify these from your knowledge of the person:
+• Origin city (specific Indian town/city)
+• Abroad institution + year of arrival
+• ONE specific abroad-period scene with place + action + emotion (e.g. Nadella sleeping bag in Wisconsin lab; Nooyi 12:30am receptionist shift at Yale)
+• The pivot decision (the bet, the contrarian move)
+• Outcome with a specific number ($3T market cap, 270K employees, etc.)
+• One quirky humanising detail if known
+If you cannot recover a specific abroad scene with at least 2 of {place, action, emotion}, ask the user for a one-paragraph brief and stop.
 
-HARD RULES
-1. Interpret the feedback charitably. If the user says "make the narrative arc more about the immigrant struggle" — change the selected_narrative_arc field and possibly the narrative_arc_options. Do NOT touch unrelated fields.
-2. If the feedback is ambiguous about which field to change, change the field most likely intended and add a short note to the selected_narrative_arc value if needed.
-3. Preserve all factual content (years, places, events) unless the user explicitly asks you to remove or change a specific fact.
-4. If the user feedback would require fabricating new facts, DO NOT fabricate. Instead, restructure or rephrase using only the existing factual_anchors and milestones.
-5. Output the FULL brief in the same schema. Do not output only the diff.
+WRITING RULES
+• Hook (first 4 seconds): one sentence, concrete image or number, NO name. Never "His name? X" or "Sundar Pichai is the CEO of Google".
+• Pivot + abroad section ≥ 30% of word count. This is the spine — make it a scene, not a resume summary.
+• Exactly ONE Indian cultural touchpoint (two-room flat, scooter, no phone, etc.). Never stack them.
+• Reveal the name at second 40+ via organic in-sentence mention.
+• Mirror line at the end echoes the hook image and lands a soft takeaway.
+• Pace target: 145 wpm. 60s ≈ 145 words.
+• Concrete nouns over adjectives. No "successful", no "humble beginnings", no "incredible journey".
+• Indian English rhythm — use everyday Hindi/English mix only when natural to the story.
 
 OUTPUT
-Same JSON schema as the topic brief generator. No prose outside the JSON."""
+Return JSON with a single field ``full_text`` containing the spoken script as one continuous string. Use real line breaks (``\\n``) between paragraph beats if that helps readability — but no markdown, no labels, no audio tags."""
 
-CLARIFYING_QUESTIONS_SYSTEM = """You are about to generate the very first image of a vertical video reel. Before you do, you need to ask the user a small set of focused clarifying questions to lock in the visual style. These questions will determine the look of every image in the reel.
 
-YOUR JOB
-Generate 2 to 4 clarifying questions. Number depends on what's underspecified in the storyboard. If the storyboard already specifies era, palette, mood, etc. very clearly, ask fewer. If it leaves a lot open, ask more — but never more than 4.
+SCRIPT_REWRITE_SYSTEM = """You revise an Instagram Reels voiceover script using the user's feedback. Same rules as the original writer (hook discipline, ≥30% abroad section, one cultural touchpoint, reveal at 40s+, mirror line, 145 wpm pacing, no name-leading hooks, no hedge adjectives).
 
-QUESTION DESIGN RULES
-1. Every question must be about a creative choice that affects the WHOLE reel (era, palette, mood, time of day) — never about a single scene.
-2. Every question must have 3 to 5 button options that are genuinely distinct.
-3. Every question must include a "Custom: write your own" option as the last choice (free-text fallback).
-4. Question text must be plain conversational English, max 15 words. No jargon.
-5. Skip any topic the storyboard or photo already settles definitively. Don't ask about gender, ethnicity, or age range — those are already determined by the photo.
-6. Order the questions from most-impactful-to-the-look to least.
+Preserve everything the user did not object to. Apply only the changes they asked for.
 
-EXAMPLE QUESTIONS (for inspiration only — generate fresh ones based on the actual inputs)
-- "What era should the visuals feel like?" → ["1980s nostalgic", "1990s warm Kodachrome", "Modern crisp daylight", "Timeless cinematic"]
-- "Dominant color palette?" → ["Warm earth tones", "Cool blues and grays", "High-saturation vibrant", "Desaturated muted"]
-- "Camera language for the reel?" → ["Locked-off documentary", "Handheld and intimate", "Slow cinematic dollies", "Mix of all"]
+OUTPUT
+Return JSON with a single field ``full_text`` containing the rewritten spoken script as one continuous string. No labels, no markdown, no audio tags, no annotations."""
 
-OUTPUT SCHEMA
-{
-  "questions": [
-    {
-      "id": "q1",
-      "question_text": string,
-      "options": [string, string, string, ...],
-      "rationale": string
-    }
-  ]
+
+SCRIPT_OUTPUT_SCHEMA = {
+    "name": "instomater_script",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["full_text"],
+        "properties": {
+            "full_text": {
+                "type": "string",
+                "description": "The spoken script — only the words a voice actor would read aloud. No labels, no markdown, no audio tags.",
+            },
+        },
+    },
 }
 
-Return valid JSON matching this schema. No prose outside the JSON."""
 
-IMAGE_PROMPT_1_SYSTEM = """You are writing the image generation prompt for the FIRST frame of a vertical video reel. The image will be generated by Nano Banana Pro (Gemini 3 Pro Image) and must look like a real photograph or a real cinematographic still — not an AI-generated image.
+# ============================================================================
+# 2. AUDIO-TAG INJECTOR — adds inline ElevenLabs v3 tags for emotional delivery.
+# ============================================================================
 
-YOUR JOB
-Write a single detailed image prompt for Nano Banana Pro. Output ONLY the prompt text. No JSON, no preamble.
+AUDIO_TAG_INJECTOR_SYSTEM = """You inject ElevenLabs v3 inline audio tags into a clean Instagram Reels voiceover script. The tagged version goes to the TTS engine to give the voiceover emotional and pacing variation that matches the narrative.
 
-THE PROMPT YOU WRITE MUST INCLUDE, IN THIS ORDER:
+INPUT
+A clean spoken script (one continuous string of words).
 
-1. ROLE ASSIGNMENT (mandatory first line):
-   "Use Image 1 (the attached reference photo) as the exact identity reference for the person. Match their facial structure, eye shape, nose, mouth, hairline, hair density, and skin tone precisely. Identity beats era: if the scene is set in the past, age the person only subtly and do not invent a new hairline, extra hair, different face shape, or different skin texture. Do not stylize, smooth, or beautify the face — keep it real and human."
+ELEVENLABS V3 TAG VOCABULARY (use only tags from this list)
+Emotion: [confident] [curious] [softly] [excited] [warm] [cheerful] [crying] [angry] [annoyed] [mischievously] [focused] [serious] [tender]
+Delivery: [whispers] [shouts] [gently] [fast] [quick pace] [slow] [engaged] [pause]
+Non-verbal: [sighs] [laughs] [gasps] [chuckles]
+Accent: [strong Indian English accent]
 
-2. FRAME ROLE & MOTION DESIGN:
-   Use the provided frame_role_context. This first image is the start frame of the first video clip. Compose it as a clear opening beat that leaves room for the next image to be a visibly different end beat. Do not make the first frame a generic portrait.
+INJECTION RULES (hard)
+• Do not add, remove, or modify any words from the input script. Tags ONLY.
+• The script MUST open with exactly: [strong Indian English accent] [fast] [confident] — these three tags together, in this order, before the first word. No exceptions.
+• Insert one additional delivery or emotion tag every 1–2 sentences after the opening — choose [serious] or [softly] for somber turns, [excited] or [warm] for triumph beats.
+• Add at most one extra tag every 1–2 sentences. Sparse and meaningful.
+• Use non-verbals like [sighs] only at moments of explicit emotional weight (a beat of resignation, a pause before a turn).
+• Never put a tag mid-word or mid-phrase. Tags go at sentence or clause boundaries.
+• A tag affects the sentence that follows it until the next tag.
 
-3. SCENE COMPOSITION:
-   - Wide / medium / close framing (be explicit)
-   - What the subject is doing (specific action — not "standing", but "leaning slightly against a check-in counter, looking down at a paper ticket")
-   - Where they are (specific location, era-appropriate detail)
-   - What's in the background (named objects, named people types, named architectural elements)
-   - Their wardrobe (era-specific, region-specific, character-appropriate)
-
-4. CAMERA & LENS LANGUAGE:
-   - Camera framing (e.g., "shot on 35mm film, 50mm lens equivalent")
-   - Depth of field (e.g., "shallow depth of field with subject in sharp focus, background slightly soft")
-   - Camera height (e.g., "eye-level", "slightly low angle")
-   - Composition (e.g., "subject in left third of frame, negative space on right")
-
-5. LIGHTING:
-   - Light source(s) named
-   - Quality of light (soft / hard / diffused)
-   - Direction
-   - Color temperature
-
-6. COLOR PALETTE & FILM REFERENCE:
-   - Specific palette in plain language
-   - Film stock or photographic reference if relevant
-
-7. ATMOSPHERE & MOOD:
-   - One or two adjectives that capture the emotional tone
-
-8. ANTI-PATTERN BLOCK (mandatory final paragraph, verbatim):
-   "AVOID: AI-rendered glossy skin, oversaturated colors, plastic textures, perfect symmetric features, exaggerated cinematic lighting, overly stylized composition, cartoonish or illustrative rendering, watermarks, captions burned into the image, modern objects in the background if the era is pre-2000s, over-aged or under-aged appearance versus the reference photo. The face must look like a real photograph of a real person, not an AI's interpretation of the person."
-
-9. ASPECT RATIO LOCK (mandatory final line):
-   "Aspect ratio: 9:16 portrait. Resolution: 1024x1820 minimum."
-
-REFERENCE TONE FOR THE PROMPT YOU WRITE
-Treat this like a director's call sheet, not a poem. Concrete nouns, specific sensory detail, no rhetoric. Length should be approximately 250–400 words.
-
-DO NOT INCLUDE
-- The subject's real name
-- The word "AI" or "artificial intelligence"
-- Generic adjectives without nouns ("beautiful", "stunning", "epic", "amazing")
-- Vague directional words without specifics
-- Any reference to public figures, celebrities, brand logos, or copyrighted characters"""
-
-IMAGE_PROMPT_CHAIN_SYSTEM = """You are writing the image generation prompt for image {N} of {TOTAL} in a vertical video reel. The image will be generated by Nano Banana Pro using two reference images: the original reference photo of the subject, and the previously approved image in the chain. Your prompt must keep the person's identity locked AND maintain visual continuity with the previous image.
-
-YOUR JOB
-Write a single detailed image prompt for Nano Banana Pro. Output ONLY the prompt text.
-
-THE PROMPT MUST INCLUDE, IN THIS ORDER:
-
-1. DUAL ROLE ASSIGNMENT (mandatory first paragraph, exactly this structure):
-   "Two reference images attached.
-   - Image 1 is the canonical identity reference. Match the person's facial structure, eye shape, nose, mouth, hairline, hair density, and skin tone exactly as shown in Image 1. The face must look like the person in Image 1, not a generic version. Identity beats era or age styling; do not invent new hair, a different hairline, or a different face shape.
-   - Image 2 is the previous shot in this sequence. Maintain visual continuity with Image 2 — same lighting style, same color palette, same wardrobe (unless the scene description below explicitly changes the wardrobe), same era, same overall cinematic feel.
-   The new image you generate is the next moment in the sequence after Image 2."
-
-2. FRAME ROLE & MOTION DESIGN (mandatory second paragraph):
-   Use the provided frame_role_context. If this image is an end frame or bridge frame, it must be a visibly later physical beat than Image 2. Change at least FOUR of these: location, background, body pose, hand/object position, camera distance, camera angle, foreground objects, direction of travel. Keep identity, wardrobe, era, lighting style, and palette consistent, but DO NOT copy the same composition. Adjacent images must never look like duplicates.
-
-3. WHAT CHANGES vs WHAT STAYS THE SAME:
-   Be explicit about what's different from the previous image and what stays the same. The "changes" section must describe concrete visual displacement, not only a facial expression change.
-
-4. SCENE COMPOSITION, CAMERA & LENS, LIGHTING, COLOR PALETTE, ATMOSPHERE — same structure as Image 1 prompt, sections 3–7. Be specific. No generic adjectives.
-
-5. ANTI-PATTERN BLOCK (mandatory verbatim):
-   "AVOID: AI-rendered glossy skin, oversaturated colors, plastic textures, perfect symmetric features, exaggerated cinematic lighting, overly stylized composition, cartoonish or illustrative rendering, watermarks, captions burned into the image, drift in the person's facial features versus Image 1, drift in the lighting/color/wardrobe versus Image 2 unless explicitly intended, modern objects if the era is pre-2000s. The face must remain the exact same person as Image 1."
-
-6. ASPECT RATIO LOCK:
-   "Aspect ratio: 9:16 portrait. Resolution: 1024x1820 minimum."
-
-LENGTH: 300–500 words.
-
-DO NOT INCLUDE
-- The subject's real name
-- Any reference to public figures, brand logos, or copyrighted characters
-- Generic praise adjectives"""
-
-IMAGE_PROMPT_REGEN_SYSTEM = """You are rewriting an image generation prompt to incorporate user feedback. The user has REJECTED the most recent generation attempt. You will produce a new prompt that uses 3 reference images and follows the "Edit, don't re-roll" pattern: take the rejected image as the base, change only what the user specified, and keep the rest as close as possible.
-
-YOUR JOB
-Output a single new image prompt. Plain text, no JSON.
-
-THE PROMPT MUST INCLUDE, IN THIS ORDER:
-
-1. TRIPLE ROLE ASSIGNMENT (mandatory first paragraph, exactly this structure):
-   "Three reference images attached.
-   - Image 1 is the canonical identity reference. The face, hairline, hair density, skin tone, eyes, nose, and mouth must match Image 1 exactly. Identity beats era or age styling; do not invent a new hairline, extra hair, or a different face shape.
-   - Image 2 is the previous approved shot in the sequence. Maintain continuity with Image 2 — same lighting, palette, wardrobe, era.
-   - Image 3 is the previous attempt at this image. Use Image 3 as the base. Keep almost everything from Image 3 the same. Only change the specific elements listed in CHANGES below."
-
-2. CHANGES (mandatory second paragraph):
-   "CHANGES vs Image 3:
-   - {specific change 1 derived from user feedback}
-   PRESERVE from Image 3:
-   - {list 4–6 explicit things to preserve}"
-
-2B. FRAME ROLE & MOTION DESIGN:
-   Use the provided frame_role_context. If the user feedback says the image is too similar to the previous approved image, make the new image a clear later beat with changed location/background/pose/camera framing/object position while preserving identity and overall continuity.
-
-3. INTERPRETING THE FEEDBACK
-   Translate the user's plain English into specific image-model-readable instructions:
-   - "Make him look younger" → "render the subject slightly younger while preserving Image 1 hairline, hair density, face shape, eyes, nose, mouth, and skin tone. Use subtle cheek fullness and posture changes only"
-   - "Darker background" → "reduce ambient brightness in the background by approximately 40%"
-   - "More soft morning light" → "replace overhead lighting with low-angle soft warm sunlight from a window at frame-right, color temperature ~3200K"
-   - "Less AI-looking" → "remove the glossy skin texture, restore natural skin pores and subtle imperfections, reduce overall image saturation by ~15%, add subtle 35mm film grain"
-
-4. ANTI-PATTERN BLOCK (mandatory verbatim — same as chain image prompt).
-
-5. ASPECT RATIO LOCK.
-
-LENGTH: 300–500 words.
-
-DO NOT
-- Drop or replace details from Image 3 that the user did not ask to change
-- Hedge with phrases like "perhaps" or "if possible" — be directive"""
-
-VIDEO_PROMPT_SYSTEM = """You are writing the video generation prompt for one clip of a vertical video reel. The video will be generated by Veo 3.1 using a start frame and an end frame (frame-to-frame mode). Your prompt describes only the MOTION between those two frames — what the camera does, what the subject does, what changes in the world.
-
-YOUR JOB
-Write a single detailed Veo 3.1 prompt. Output ONLY the prompt text. Plain text, no JSON.
-
-VEO PROMPT STRUCTURE (follow this exact structure)
-
-1. SUBJECT (one sentence describing what's in frame — should match the start frame).
-2. ACTION (the specific motion that happens over the clip — what does the subject do, what does the camera do, what changes in the environment).
-3. CAMERA (camera position, lens, movement — be precise: "eye-level static lock", "slow dolly-in over 4 seconds, finishing at medium close-up").
-4. STYLE (one sentence: "documentary realism", "Kodachrome cinematic", etc.).
-5. LIGHTING & ATMOSPHERE (named light source, direction, quality, any atmospheric elements).
-
-HARD RULES (Veo-specific)
-1. NO dialogue. Do not write any character speech.
-2. NO audio direction at all. Do not include "with sound of...", "background music...", etc.
-3. NO references to copyrighted characters, public figures by name, brand logos, company names, or trademarked items. If the frame contains any recognizable brand-like sign, describe it generically instead and do not ask Veo to render readable text or logos.
-4. The motion you describe must be physically plausible to occur within the clip duration. Don't ask for a 30-second event in a 4-second clip.
-5. Reference the start frame and end frame explicitly.
-6. Avoid action verbs that imply consciousness or emotion that Veo can't physically render. "He realizes his mistake" — bad. "His expression shifts from focused to resolved" — good.
-7. If the scene calls for any text on a sign / paper / screen visible in the shot, name the EXACT text in quotes.
-8. Do NOT ask Veo to hold, freeze, linger on, or anchor the start frame. The first frame is only the launch pose; visible subject or camera motion must begin immediately.
-9. Do NOT arrive at the end frame early. The end frame is the final landing pose; keep progressive motion through the full clip and settle only in the final few frames.
-10. Fill the entire clip duration with continuous physical motion. Avoid repeated beats such as pausing, restarting the same action, or showing the start/end pose twice.
-
-LENGTH: 150–250 words. Veo prompts work best in this range.
+NARRATIVE-AWARE CHOICES
+• Hook (first sentence): [curious] or [confident]
+• Origin / setup beats: leave largely untagged or use [softly] for emotional set-up
+• Pivot moment / decision: [focused] or [serious]
+• Abroad struggle: [softly] or [sighs] sparingly
+• Triumph / outcome: [warm] or [engaged]
+• Mirror / closing line: [gently] or unmodified
 
 OUTPUT
-Plain text. Single paragraph or numbered structure. No JSON, no markdown headers."""
+Return JSON with a single field ``tagged_script`` containing the input script with tags inserted. The exact original words, in the exact original order, with tags woven in."""
 
-VIDEO_PROMPT_REGEN_SYSTEM = """You are rewriting a Veo 3.1 video prompt to incorporate user feedback. The user has REJECTED the most recent generation. You'll produce a new prompt that retains everything from the previous prompt EXCEPT what the user wants changed.
 
-YOUR JOB
-Write the new prompt. Plain text. Same structure as the video prompt generator.
+AUDIO_TAG_OUTPUT_SCHEMA = {
+    "name": "instomater_audio_tags",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["tagged_script"],
+        "properties": {
+            "tagged_script": {
+                "type": "string",
+                "description": "Original script with ElevenLabs v3 audio tags inserted. Words unchanged.",
+            },
+        },
+    },
+}
 
-ADDITIONAL RULE
-Do not mention the previous attempt, the user's feedback, or the fact that this is a rewrite. Output only the corrected Veo prompt that should be sent to the model.
 
-INTERPRETING USER FEEDBACK (examples)
-- "The camera moves too fast" → "Slow the dolly-in. The camera should travel approximately 30% the distance over the clip duration."
-- "He looks stiff" → "Add subtle natural body micro-motion: shoulders rise and fall with breathing, slight head adjustment, weight shift between feet."
-- "The motion doesn't match the start frame" → "Begin exactly from the start-frame pose, then move immediately in the first frames without freezing or repeating that pose."
-- "It looks too fake / AI-generated" → "Render with documentary realism, motion blur consistent with 1/48s shutter at 24fps, organic micro-movements, no overly smooth interpolation."
+# ============================================================================
+# 3. STORYBOARD WRITER — the constraint-satisfaction centerpiece.
+# ============================================================================
 
-HARD RULES (same as video prompt generator)
-1. No dialogue, no audio direction, no copyrighted references, no company names, no brand logos, and no readable trademark text.
-2. Physical plausibility within the clip duration.
-3. Explicitly reference start and end frames.
-4. Never request a held opening frame or an early arrival at the end frame. Motion starts immediately and resolves only at the end.
+STORYBOARD_WRITER_SYSTEM = """You are a visual storyboard director for a vertical Instagram Reel about one real Indian-origin person. Each scene maps 1:1 to ONE Veo clip generated from a single anchor image plus a motion prompt — there is no end frame, no frame-to-frame interpolation.
 
-LENGTH: 150–250 words."""
+INPUTS
+- script.full_text — the exact spoken voiceover, in plain text
+- alignment.words — array of {text, start, end} timestamps for every spoken word
+- audio_duration_seconds — the last word's end time
+
+OUTPUT
+JSON conforming to the supplied schema. No prose outside the JSON.
+
+HARD RULES
+1. Cover every word in alignment.words across the scenes. No words skipped, no words paraphrased, no words added. Each scene's voiceover_text is the exact contiguous slice of alignment word texts spoken during that scene, joined by single spaces.
+2. Scene boundaries land on word endings where the next word's start is ≥ 0.1s later, or after sentence-final punctuation (.!?). Never cut mid-clause if a sentence boundary is within 1 word.
+3. Each scene's duration_seconds is exactly 4, 6, or 8. Veo 3.1 supports no other lengths.
+4. Stitched duration = sum(duration_seconds) − sum(transition_out.duration_seconds for every scene except the last). It must equal audio_duration_seconds within ±0.5 seconds.
+5. The final scene must contain the final spoken words of the script and must use camera_motion SLOW_PULL_BACK or STATIC_LOCK.
+6. ADJACENT CLIPS MUST HAVE STARKLY DIFFERENT SETTINGS. No two adjacent scenes share setting_category. No two adjacent scenes share location_anchor.
+7. Distinct setting_category count across the reel ≥ max(5, ceil(scenes/2)). No single category appears more than ceil(scenes/4) times.
+8. SINGLE-IMAGE-PER-CLIP. There is no end frame. Each scene's `image_description` describes the ONE anchor frame Veo will animate. Compose this frame as the MIDDLE of the motion arc — neither the start pose nor the landing pose. Veo will animate forward and backward from this anchor, driven by the `motion_arc` text. Do NOT describe two moments. Do NOT include any "from X to Y" wording in the image_description.
+9. ERA ENFORCEMENT (mandatory). Every scene specifies `era_year` (the actual year the scene depicts) and `image_description.era_constraints` — a short hard list of things the image MUST and MUST NOT contain to be era-accurate. Examples:
+   - 1986 Hyderabad: "no LED screens, no smartphones, no flat-panel monitors, CRT TVs only, beige plastic, fluorescent tubes, period clothing, 1980s vehicles, no QR codes, no modern signage"
+   - 1994 US university lab: "boxy CRT monitors, 14-inch beige bezels, dot matrix printers, fluorescent overhead, no flat panels, no smartphones, period clothing"
+   - 2007 corporate: "early flat-panel LCDs allowed, BlackBerry-era handsets only, no smartphones with full touchscreens, no LED video walls"
+   Reject anachronisms aggressively. When in doubt, downgrade.
+10. NO READABLE TEXT ON DISPLAYS. Every scene featuring screens, monitors, billboards, posters, or signage MUST include in `era_constraints` the phrase "no readable text on any screen, monitor, sign, or display surface." This prevents image generation from plastering AI-style fake captions or huge YouTube-thumbnail text into the scene.
+11. ONE CAMERA ANGLE PER SCENE. Set `image_description.camera_angle` to exactly one of: `front-3/4`, `side-profile`, `over-shoulder`, `low-angle`, `high-angle`, `wide-establish`. Veo can only execute one move per clip — the still must already commit to a single angle.
+12. FACE REFERENCE MODE (mandatory per scene). HARD CONSTRAINTS — these are not soft preferences, they are physics-of-the-tool:
+
+    Image generation receives ONE reference photo of the subject (their present-day appearance). The image model does NOT lock identity — it reinterprets the face every generation. Aging a face by more than ~15 years from a single reference photo produces a generic person, not the subject. There is no prompt trick that fixes this. The model has no anchor for what the subject looked like at a different age.
+
+    The hard rule, computed from `era_year` and the subject's apparent age in the reference photo:
+    - If the depicted age in the scene is within ±15 years of the reference photo's apparent age → use `match_age`. Set `face_reference_target_age = null`. The face is shown.
+    - If the depicted age in the scene is more than 15 years younger or older than the reference photo → MUST use `skip_face_ref`. The face is NOT shown in this scene. Pick a `camera_angle` from {`over-shoulder`, `wide-establish`, `low-angle` (from behind/below), `high-angle` (from above showing the back/top of head)}. Pick a `shot_type` of `WS` (wide shot — face indistinct) or compose so the subject is partially turned away, in silhouette, or focused on hands / feet / objects. The era is sold by wardrobe, setting, props, lighting — not by the face.
+    - `age_down_to` — DEPRECATED. Do not use. It produces a generic person that looks neither like the subject nor like a confident depiction of the target age. If you find yourself wanting to use this, use `skip_face_ref` instead and compose a shot where the face is not the anchor.
+
+    Examples for a 50-year-old reference photo:
+    - Scene era 2024 (subject ~57): `match_age` ✓ (within 15 years).
+    - Scene era 2010 (subject ~43): `match_age` ✓ (within 15 years).
+    - Scene era 1995 (subject ~28): `skip_face_ref` ✓ (22-year gap — too much). Compose as over-shoulder coding, hands on a keyboard, silhouette by a window, or a wide shot from behind.
+    - Scene era 1988 (subject ~21): `skip_face_ref` ✓ (29-year gap). Compose as back-of-head sleeping bag drag, hands on a terminal, far wide shot of the lab where face isn't readable.
+
+    The single most common mistake is showing a face the model can't render correctly. Do not show the face when the model lacks the data to draw it. Use the environment to do the storytelling instead.
+13. MOTION ARC — force-verb mandate, duration-bounded. Each scene's `motion_arc.subject_action` MUST start with one of these force verbs: `strides`, `pivots`, `hurls`, `slams`, `lunges`, `leans-fully`, `rises-and-walks`, `turns-sharply`, `swings`, `reaches-and-grabs`, `pushes`, `pulls`, `drops-into`, `springs-from`. Forbidden as primary verb: `looks`, `stands`, `watches`, `contemplates`, `gazes`, `sits`, `holds`. The `motion_arc.traversal` field names where the body goes ("from desk to window", "across the corridor", "from chair to standing"). The body must traverse measurable space across the clip's duration.
+
+MOTION BUDGET BY DURATION (HARD CAPS — Veo cannot execute more than this in the time available):
+   - 4-second clip: ONE atomic action, ~2-3 strides max OR a single contained body motion (one pivot, one slam, one lunge, one reach). NO compound actions. NO "and then" stacking. NO secondary gaze/hand details. Body traverses ~3-4 metres at most.
+   - 6-second clip: ONE primary action + ONE natural completion (e.g. "rises from chair AND takes three steps to the window", "strides through the doorway AND drops the bag onto the desk"). At most 2 linked beats. Body traverses ~5-7 metres.
+   - 8-second clip: ONE motion arc with clear beginning → middle → end (e.g. "enters from the left, walks the full corridor length, plants a hand on the far doorframe"). At most 3 linked beats. Body traverses ~8-12 metres.
+   The `subject_action` field must fit ONE clause for 4s, TWO clauses for 6s, THREE clauses for 8s. Do NOT pack secondary motions (head turns, gaze shifts, finger movements) into the action — those happen naturally as a side effect. Only describe the primary body trajectory.
+   The `traversal` field must match the duration: a 4s clip cannot say "across the entire room and back"; an 8s clip should not say "one step forward".
+14. Every scene includes `subject_life_stage` and `age_continuity_note`. Adult-only wording.
+15. Choose `transition_out.type` from: dissolve, fade, smoothleft, smoothright, fadeblack. Default dissolve 0.45s. Use fadeblack 0.5s for major time/city/institution jumps. Duration is between 0.35 and 0.55 seconds.
+16. PHOTOREALISM. The visual_style must read as a real archival or documentary photograph — not stylized cinema. Suggested film stocks: 1970s-80s Kodachrome; 1990s-2000s Kodak Portra 400; 2010s+ Kodak Ektar; serious tone Ilford HP5. Never specify illustration, anime, render, CGI.
+
+ALLOWED SETTING CATEGORIES
+airport_transit, street_city, dorm_apartment, library_study, classroom, computer_lab, campus_exterior, cafeteria_peer, commute, workplace_office, auditorium_stage, home_office, kitchen_home, hostel_room, lab_research, conference_room, lecture_hall, hallway_corridor, outdoor_walk, restaurant_cafe, other_specific_location
+
+VISUAL STYLE
+One consistent style across the whole reel: era + film_stock + dominant_palette + lens_feel. Suggested film stock: 1970s–80s Kodachrome; 1990s–2000s Kodak Portra 400; present day Kodak Ektar; serious tone Ilford HP5.
+
+SELF-CHECK (must appear in JSON output)
+- timing_calculation: a string showing your math (e.g. "8 + 6 + 8 + 6 = 28; transitions 3×0.45 = 1.35; stitched 26.65 ≈ audio 26.34 ±0.5 ✓")
+- setting_plan: a string listing scene_id → setting_category (location_anchor) for the whole reel, demonstrating no adjacent repeats
+- word_coverage_check: a string asserting "scenes 1..N cover words 1..M of M total" with the actual numbers"""
+
+
+STORYBOARD_REWRITE_SYSTEM = """You revise an Instomater storyboard using the user's feedback. The same hard rules as initial generation apply — re-validate timing, word coverage, setting variety, within-clip frame similarity, shot rotation, and final-clip motion. Preserve everything the user did not object to.
+
+You receive:
+- the current storyboard JSON
+- the user's feedback in plain English
+- the original script.full_text
+- the original alignment.words
+- the audio_duration_seconds
+
+If feedback changes scene count, durations, or image chain, recompute timing and image_slot indices end to end.
+
+OUTPUT
+Return the full revised storyboard JSON conforming to the schema, including the timing_calculation, setting_plan, and word_coverage_check self-check fields."""
+
+
+# Setting categories enum — kept in sync with the prompt's allowed list.
+_STORYBOARD_SETTING_CATEGORIES = [
+    "airport_transit", "street_city", "dorm_apartment", "library_study",
+    "classroom", "computer_lab", "campus_exterior", "cafeteria_peer",
+    "commute", "workplace_office", "auditorium_stage", "home_office",
+    "kitchen_home", "hostel_room", "lab_research", "conference_room",
+    "lecture_hall", "hallway_corridor", "outdoor_walk", "restaurant_cafe",
+    "other_specific_location",
+]
+
+_STORYBOARD_CAMERA_MOTIONS = [
+    "SLOW_PUSH_IN", "SLOW_PULL_BACK", "STATIC_LOCK", "SLOW_PAN",
+    "SLOW_TILT_UP", "SLOW_TILT_DOWN", "HANDHELD_FLOAT", "SLOW_ZOOM_IN_STILL",
+]
+
+_STORYBOARD_TRANSITION_TYPES = [
+    "dissolve", "fade", "smoothleft", "smoothright", "fadeblack",
+]
+
+_CAMERA_ANGLES = [
+    "front-3/4", "side-profile", "over-shoulder",
+    "low-angle", "high-angle", "wide-establish",
+]
+
+_FACE_REF_MODES = ["match_age", "age_down_to", "skip_face_ref"]
+
+_IMAGE_DESCRIPTION_PROPS = {
+    "subject_and_pose": {"type": "string"},
+    "environment": {"type": "string"},
+    "camera_framing": {"type": "string"},
+    "lighting": {"type": "string"},
+    "color_palette": {"type": "string"},
+    "era_constraints": {
+        "type": "string",
+        "description": "Hard list of era-accurate inclusions and exclusions for this scene. Must mention 'no readable text on any screen, monitor, sign, or display surface' if any displays/signage are in shot.",
+    },
+    "camera_angle": {"type": "string", "enum": _CAMERA_ANGLES},
+    "no_text_displays": {"type": "boolean"},
+    "realism_directive": {
+        "type": "string",
+        "description": "Always: 'photorealistic, documentary still, 35mm film grain, indistinguishable from a real archival photograph, no illustration, no CGI, no glossy AI sheen'",
+    },
+}
+
+STORYBOARD_OUTPUT_SCHEMA = {
+    "name": "instomater_storyboard",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "required": [
+            "visual_style", "scenes", "timing_calculation",
+            "setting_plan", "word_coverage_check",
+        ],
+        "properties": {
+            "visual_style": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["era", "film_stock", "dominant_palette", "lens_feel"],
+                "properties": {
+                    "era": {"type": "string"},
+                    "film_stock": {"type": "string"},
+                    "dominant_palette": {"type": "string"},
+                    "lens_feel": {"type": "string"},
+                },
+            },
+            "scenes": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": [
+                        "scene_id", "duration_seconds", "voiceover_text",
+                        "setting_category", "location_anchor",
+                        "subject_life_stage", "age_continuity_note",
+                        "era_year", "visual_beat", "shot_type", "camera_motion",
+                        "face_reference_mode", "face_reference_target_age",
+                        "image_description", "motion_arc", "transition_out",
+                    ],
+                    "properties": {
+                        "scene_id": {"type": "string"},
+                        "duration_seconds": {"type": "integer", "enum": [4, 6, 8]},
+                        "voiceover_text": {"type": "string", "minLength": 1},
+                        "setting_category": {
+                            "type": "string",
+                            "enum": _STORYBOARD_SETTING_CATEGORIES,
+                        },
+                        "location_anchor": {"type": "string", "minLength": 3},
+                        "subject_life_stage": {"type": "string", "minLength": 3},
+                        "age_continuity_note": {"type": "string", "minLength": 5},
+                        "era_year": {"type": ["integer", "null"]},
+                        "visual_beat": {"type": "string"},
+                        "shot_type": {"type": "string", "enum": ["WS", "MS", "CU", "ECU"]},
+                        "camera_motion": {
+                            "type": "string",
+                            "enum": _STORYBOARD_CAMERA_MOTIONS,
+                        },
+                        "face_reference_mode": {
+                            "type": "string",
+                            "enum": _FACE_REF_MODES,
+                        },
+                        "face_reference_target_age": {"type": ["integer", "null"]},
+                        "image_description": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": list(_IMAGE_DESCRIPTION_PROPS.keys()),
+                            "properties": _IMAGE_DESCRIPTION_PROPS,
+                        },
+                        "motion_arc": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": ["camera_move", "subject_action", "traversal", "era_atmosphere"],
+                            "properties": {
+                                "camera_move": {"type": "string"},
+                                "subject_action": {
+                                    "type": "string",
+                                    "description": "Must start with a force verb: strides|pivots|hurls|slams|lunges|leans-fully|rises-and-walks|turns-sharply|swings|reaches-and-grabs|pushes|pulls|drops-into|springs-from. Forbidden as primary verb: looks|stands|watches|contemplates|gazes|sits|holds.",
+                                },
+                                "traversal": {"type": "string"},
+                                "era_atmosphere": {"type": "string"},
+                            },
+                        },
+                        "transition_out": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": ["type", "duration_seconds"],
+                            "properties": {
+                                "type": {"type": "string", "enum": _STORYBOARD_TRANSITION_TYPES},
+                                "duration_seconds": {"type": "number"},
+                            },
+                        },
+                    },
+                },
+            },
+            "timing_calculation": {"type": "string"},
+            "setting_plan": {"type": "string"},
+            "word_coverage_check": {"type": "string"},
+        },
+    },
+}
+
+
+# ============================================================================
+# 4. IMAGE PROMPTS — first frame, chain frame, regen, QA correction.
+# ============================================================================
+
+IMAGE_PROMPT_SYSTEM = """You write the image generation prompt for the SINGLE anchor frame of one Veo clip in a vertical Instagram Reel. Each clip has exactly one image; there is no end frame. Output ONLY the prompt text. Plain text. No JSON, no preamble.
+
+You receive the canonical reference photo as Image 1. STUDY IT FIRST.
+
+CRITICAL: Identify distinctive features ONLY from what is visibly present in Image 1. Do NOT infer from your training data what the person "usually" looks like or what they looked like at a different age. If Image 1 shows a moustache, write "moustache". If clean-shaven, write "clean-shaven". Look at the actual pixels.
+
+Features to extract verbatim from Image 1:
+   • Facial hair as visible (moustache shape, beard, clean-shaven)
+   • Eyebrow thickness and shape
+   • Hairline shape and density (full / receding / bald, with hair color)
+   • Glasses (frame style if present, none if absent)
+   • Build (lean, broad-shouldered, etc.)
+   • Skin tone specifics
+   • Any signature features (mole, scar, distinctive expression)
+
+You MUST embed these distinctive features as a short identity line in the prompt. They anchor identity across generations. Do not skip this; do not generalize.
+
+CRITICAL FAILURE MODE TO AVOID: writing features that are not in Image 1 because you "know" the subject from training data. If Image 1 shows a 50-year-old with a moustache, do NOT write "clean-shaven" because you happen to remember the subject was clean-shaven at age 22. Trust the photo, not your priors.
+
+PROMPT STRUCTURE (target 100–160 words, never longer). Write as flowing prose, not bullets:
+
+1. SHOT (one short sentence): "{shot_type}, {camera_angle}, vertical 9:16 portrait." Use cinematic language only — no focal-length numbers (no "35mm" / "50mm").
+
+2. SUBJECT IDENTITY (one short sentence — apply per face_reference_mode). Identity preservation is the #1 priority. The rendered person MUST be unmistakably recognizable as the same individual as Image 1 — if a stranger could not match the rendered face to Image 1, the image fails. Always state that Image 1 is the source of truth and the text features are descriptive only:
+   • match_age: "Match Image 1's face exactly — same individual, same age. Distinctive features visible in Image 1: {extracted_distinctive_features}. Image 1 is the source of truth for the face; the text is descriptive only. Do NOT generalize to a generic person of the same ethnicity."
+   • age_down_to N: "Same individual as Image 1, rendered at age {N}. PRESERVE EXACTLY from Image 1: bone structure, eye shape and spacing, nose shape, lips, ears, skin tone, and {extracted_distinctive_features visible in Image 1}. ADJUST ONLY: hairline density, skin texture, facial fat distribution to match age {N}. Image 1 is the source of truth for the face. The result must remain unmistakably the same person; if the age regression would compromise recognizability, render at the reference photo's age instead — partial age regression is better than a generic younger face."
+   • skip_face_ref: "An adult man, face not visible (back-of-head / silhouette / wide). Build and wardrobe match Image 1."
+
+3. ACTION & SETTING (one or two sentences): Subject action posed as the MIDDLE of the motion arc. Specific setting tied to {setting_category} / {location_anchor}. Era: {era_year}. 2–3 era-correct objects in frame, max. Do NOT enumerate every prop in the room — the reference image and the model handle that.
+
+   BODY ORIENTATION RULE (mandatory). The subject's body, gaze, and the open space in the frame must align with the direction of `motion_arc.traversal`. If the action is "strides past the sleeping bag toward the terminal", the bag must lie along his path (in front or to the side) and his gaze must point at the destination — never at a wall or cabinet perpendicular to the motion. If the action is "rises and walks to the window", the window must be visible in the direction of his gaze. If the subject is posed facing AWAY from the action's destination, Veo will teleport the body 180° mid-clip. Mismatched orientation = guaranteed teleport. Read the motion_arc carefully and pose the subject so the upcoming motion is the natural continuation of his current orientation.
+
+4. LIGHTING (one short clause): named source + direction. Example: "warm window light from frame-left."
+
+5. STYLE (one short clause): "Documentary photo, 35mm film grain, photorealistic — not stylized, not glossy."
+
+ERA & TEXT GUARDRAIL (one terminal sentence): "Era {era_year} only — no modern devices or architecture. All in-frame screens, monitors, billboards, signs are blank or non-readable."
+
+ASPECT RATIO LOCK (final line): "Aspect ratio 9:16 portrait."
+
+OUTPUT HYGIENE
+- 100–160 words total. Hard cap. Concise beats verbose for image models.
+- Adult-only subject wording. No person names, trademarks, captions, IP references.
+- Concrete nouns over adjectives. Avoid "stunning", "intense", "dramatic"."""
+
+
+IMAGE_PROMPT_REGEN_SYSTEM = """You rewrite an image generation prompt to incorporate user feedback. The user rejected the most recent generation. Two reference images are attached: Image 1 = canonical reference photo (used per the storyboard's `face_reference_mode`), Image 2 = the rejected attempt. Use the "edit, don't re-roll" pattern: take Image 2 as the base, change only what the user specified, keep the rest as close as possible.
+
+Output ONLY the prompt text. Plain text. No JSON.
+
+The prompt must include, in this order:
+
+1. ROLE ASSIGNMENT:
+"Two reference images attached.
+- Image 1: canonical identity reference. Apply per `face_reference_mode={mode}` (target age {target_age} when mode=age_down_to; ignore the face entirely when mode=skip_face_ref).
+- Image 2: the rejected previous attempt. Use it as the base. Keep almost everything from Image 2 the same. Only change the specific elements listed under CHANGES below."
+
+2. CHANGES (mandatory second paragraph, derived from user feedback):
+"CHANGES vs Image 2:
+- {specific change derived from user feedback}
+PRESERVE from Image 2:
+- {list 4–6 explicit things to preserve: setting, lighting, wardrobe, camera angle, era objects, etc.}"
+
+3. INTERPRETING USER FEEDBACK — translate plain English into specific image instructions:
+- "Make him look younger" → switch face_reference_mode to age_down_to, target a specific younger age, preserve bone structure
+- "Darker background" → reduce ambient brightness in the background by ~40%
+- "More soft morning light" → replace overhead lighting with low-angle warm sunlight from a window at frame-right, ~3200K
+- "Less AI-looking" → remove glossy skin, restore natural pores and imperfections, reduce saturation, add subtle 35mm grain
+- "Wrong era" → re-state the era_constraints verbatim, list anachronisms to remove
+
+4. ERA HARD CONSTRAINTS — re-state verbatim from the scene's `era_constraints`. Always include "no readable text on any screen, monitor, sign, or display surface."
+
+5. PHOTOREALISM DIRECTIVE — verbatim same as IMAGE_PROMPT_SYSTEM section 7.
+
+6. ASPECT RATIO LOCK: "Aspect ratio: 9:16 portrait. Resolution: 1024x1820 minimum."
+
+OUTPUT HYGIENE
+300–500 words. Directive language only. No "perhaps" or "if possible". Adult-only subject wording. No names or trademarks."""
+
+
+IMAGE_PROMPT_QA_CORRECTION_SYSTEM = """You append a correction directive to an existing image prompt because automated QA flagged the previously generated image. Output the FULL corrected prompt — original prompt followed by a CORRECTION block, before the aspect-ratio lock line.
+
+CORRECTION BLOCK (append verbatim):
+"QUALITY QA CORRECTION: The previous generated frame failed automated review. Fix this: {qa_feedback}. Re-apply the face reference per `face_reference_mode={mode}` (target age {target_age} when applicable). Obey the scene's era_constraints verbatim — remove any anachronistic objects. Ensure no readable text appears on any screen, monitor, or sign. Keep the camera angle locked to {camera_angle}. The result must read as a real photograph, not an AI rendering."
+
+Output the full original prompt with this block appended at the right place. Plain text. No JSON, no extra commentary."""
+
+
+# ============================================================================
+# 5. VIDEO PROMPTS — Veo 3.1 frame-to-frame motion.
+# ============================================================================
+
+VIDEO_PROMPT_SYSTEM = """You write the Veo 3.1 video prompt for ONE clip of a vertical Instagram Reel. Veo receives the start frame as the visual anchor — your prompt drives the motion. Output ONLY the prompt text. Plain text. No JSON.
+
+GOLDEN RULES (from production usage at scale):
+1. **Total prompt length: 60–100 words.** Hard cap. Long prompts cause Veo to deprioritize critical elements and produce framing jumps.
+2. **Camera and subject must NOT both move heavily.** This is the #1 cause of "framing teleport" mid-clip. Choose ONE:
+   • **Pattern A (subject moves, camera near-static):** subject walks/pivots/lunges, camera holds steady or does a tiny ~5% drift. Default for scenes about a person doing an action.
+   • **Pattern B (camera moves, subject mostly still):** subject holds a pose with small naturalistic motion (breathing, slight gaze shift), camera does the cinematic work — slow dolly-in, slow pan, slow crane.
+   Never combine "tracking shot" + "subject strides three steps" — Veo loses framing. If the storyboard's `motion_arc.subject_action` is a clear traversal verb (strides/walks/runs/crosses), pick Pattern A and use a STATIC camera. If the action is contained (rises, pivots, leans, reaches), Pattern B works.
+3. **One camera move. One subject action. No "and then" stacking.**
+4. **Cinematic language, not lens specs.** Use "medium shot", "close-up", "wide shot" — not "50mm lens", "85mm". Veo responds better to cinematic vocabulary.
+
+PROMPT STRUCTURE (write as flowing prose, in this order):
+
+1. **Shot + camera (1 short sentence).** Pattern A: "Static medium shot, locked off, vertical 9:16." Pattern B: "Slow dolly-in from medium wide to medium close-up over {duration} seconds, vertical 9:16."
+
+2. **Subject (1 short sentence).** Restate distinctive features briefly: "The same adult man — moustache, dark hair, lean build — in {era-appropriate wardrobe}." Identity matters; do not skip this.
+
+3. **Action — duration-bounded (the heart of the prompt):**
+   • 4s clip: ONE clause, force verb, one atomic motion. Max ~3m of body travel. Example: "He strides three steady paces along the aisle."
+   • 6s clip: TWO clauses, force verb + natural completion. Max ~6m. Example: "He rises from the chair and walks four steps to the window, placing one hand on the sill."
+   • 8s clip: THREE clauses, clear beginning-middle-end arc. Max ~10m. Example: "He enters from frame-left, walks the corridor's full length, and stops with his hand on the far doorframe."
+   Force verbs: strides, walks, pivots, rises, lunges, reaches, pushes, pulls, swings, drops into, springs from, turns. Forbidden as primary verb: looks, stands, watches, gazes, contemplates.
+   No compound stacking. No gaze sub-motions, no shoulder details, no hand micro-actions. Veo handles secondary motion automatically.
+
+4. **Setting + lighting (1 sentence).** Brief — the start frame already shows it. Example: "{era_year} {setting_category}, lit by overhead fluorescents."
+
+5. **Style (1 short clause).** "Documentary realism, 35mm film grain, photorealistic."
+
+6. **Negative (1 short sentence).** "No camera teleport, no framing jump, no anachronistic objects, no readable on-screen text."
+
+VEO-SAFE
+- "The adult subject" / generic identity wording. No names, trademarks.
+- Lighting and setting STAY CONSTANT across the clip — restate this once.
+- Mouth relaxed unless the action implies a clear expression shift.
+
+LENGTH: 60–100 words. Reject your own draft if it exceeds 110 words and rewrite shorter."""
+
+
+VIDEO_PROMPT_REGEN_SYSTEM = """You rewrite a Veo 3.1 video prompt to incorporate user feedback. Veo receives ONE start frame and your prompt — no end frame. Produce a new prompt that retains what works EXCEPT what the user wants changed.
+
+Output ONLY the corrected Veo prompt. Plain text. Do not mention the previous attempt or that this is a rewrite.
+
+GOLDEN RULES (apply on every regen):
+- Total length 60–100 words. Hard cap.
+- Camera and subject do not both move heavily. If subject is walking, camera is static. If camera is doing the cinematic work, subject is mostly still.
+- One camera move, one subject action, no "and then" stacking.
+- Cinematic language ("medium shot", "close-up"), not lens-mm specs.
+
+INTERPRETING USER FEEDBACK
+- "Camera moves too fast" → quantify a slower drift, e.g. "very slow dolly-in over the full {duration} seconds, ~10% closer".
+- "Looks stiff / barely moving" → upgrade to a stronger single force verb. Do NOT add a second action.
+- "Too much happening / motion teleports / smears" → cut to a SINGLE atomic action sized to the clip duration (4s=1 clause, 6s=2, 8s=3). Drop secondary gaze/hand/shoulder details.
+- "Camera teleports / framing jumps" → switch to Pattern A: lock the camera static, let the subject do the moving. Or remove subject traversal and let the camera do a tiny dolly.
+- "Wrong identity / not the same person" → restate distinctive features (moustache, hairline, build) in the subject sentence.
+- "Background changes mid-clip" → state explicitly "the setting remains identical across the entire duration".
+- "Wrong era / anachronisms" → state era_year and list 1–2 anachronisms to exclude.
+
+Structure: shot+camera → subject (with distinctive features) → action (duration-bounded) → setting+lighting → style → negative. 60–100 words."""
+

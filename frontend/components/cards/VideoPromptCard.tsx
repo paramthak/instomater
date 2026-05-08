@@ -8,8 +8,8 @@ interface Props {
     clip_index: number;
     prompt: string;
     start_image_path: string;
-    end_image_path: string;
     duration_seconds: number;
+    cost_summary?: { total_usd: number };
   };
   iteration: number;
   status: string;
@@ -25,8 +25,8 @@ export function VideoPromptCard({ data, iteration, status, sessionId, onAction }
   const approved = status === "approved";
 
   const costEstimate = veoModel === "fast"
-    ? `~$${(data.duration_seconds * 0.125).toFixed(2)}`
-    : `~$${(data.duration_seconds * 0.575).toFixed(2)}`;
+    ? `~$${(data.duration_seconds * 0.10).toFixed(2)}`
+    : `~$${(data.duration_seconds * 0.20).toFixed(2)}`;
 
   const handleApproveAndGenerate = async () => {
     setLoading(true);
@@ -39,6 +39,17 @@ export function VideoPromptCard({ data, iteration, status, sessionId, onAction }
     } finally { setLoading(false); }
   };
 
+  const handleRestore = async () => {
+    setLoading(true);
+    try {
+      await api.sendAction(sessionId, "prompt_restore", "video_generation", {
+        clip_index: data.clip_index,
+        version: iteration,
+      });
+      onAction?.();
+    } finally { setLoading(false); }
+  };
+
   return (
     <div className="bg-zinc-800/60 border border-zinc-700 rounded-xl p-4 max-w-2xl w-full">
       <div className="flex items-center justify-between mb-3">
@@ -46,19 +57,11 @@ export function VideoPromptCard({ data, iteration, status, sessionId, onAction }
         <span className="text-zinc-500 text-xs">v{iteration} · {data.duration_seconds}s</span>
       </div>
 
-      {/* Start/End frames */}
-      <div className="flex gap-3 mb-3">
-        <div className="flex-1">
-          <p className="text-zinc-500 text-xs mb-1">Start frame</p>
-          <div className="aspect-[9/16] bg-zinc-900 rounded overflow-hidden">
-            <img src={api.assetUrl(sessionId, data.start_image_path)} alt="Start" className="w-full h-full object-cover" />
-          </div>
-        </div>
-        <div className="flex-1">
-          <p className="text-zinc-500 text-xs mb-1">End frame</p>
-          <div className="aspect-[9/16] bg-zinc-900 rounded overflow-hidden">
-            <img src={api.assetUrl(sessionId, data.end_image_path)} alt="End" className="w-full h-full object-cover" />
-          </div>
+      {/* Anchor frame */}
+      <div className="mb-3">
+        <p className="text-zinc-500 text-xs mb-1">Anchor frame</p>
+        <div className="aspect-[9/16] bg-zinc-900 rounded overflow-hidden max-h-96 mx-auto">
+          <img src={api.assetUrl(sessionId, data.start_image_path)} alt="Anchor" className="w-full h-full object-cover" />
         </div>
       </div>
 
@@ -66,8 +69,11 @@ export function VideoPromptCard({ data, iteration, status, sessionId, onAction }
       <pre className="bg-zinc-900 rounded-lg p-3 text-xs text-zinc-300 whitespace-pre-wrap font-mono leading-relaxed overflow-x-auto max-h-48">
         {data.prompt}
       </pre>
+      {data.cost_summary && (
+        <div className="mt-2 text-[11px] text-zinc-400">Prompt cost: ${data.cost_summary.total_usd.toFixed(4)}</div>
+      )}
 
-      {!approved && onAction !== undefined && (
+      {onAction !== undefined && (
         <div className="mt-4 space-y-3">
           {/* Veo model toggle */}
           <div className="flex items-center gap-2">
@@ -112,15 +118,18 @@ export function VideoPromptCard({ data, iteration, status, sessionId, onAction }
             </div>
           ) : (
             <div className="flex gap-2">
-              <button onClick={handleApproveAndGenerate} disabled={loading} className="px-4 py-2 bg-green-700 hover:bg-green-600 disabled:opacity-50 text-white rounded-lg text-sm font-medium">
-                Approve and Generate
-              </button>
+              {!approved && (
+                <button onClick={status === "previous" ? handleRestore : handleApproveAndGenerate} disabled={loading} className="px-4 py-2 bg-green-700 hover:bg-green-600 disabled:opacity-50 text-white rounded-lg text-sm font-medium">
+                  {status === "previous" ? "Use this version" : "Approve and Generate"}
+                </button>
+              )}
               <button onClick={() => setShowChange(true)} className="px-4 py-2 bg-zinc-700 hover:bg-zinc-600 text-white rounded-lg text-sm">Change</button>
             </div>
           )}
         </div>
       )}
       {approved && <div className="mt-3 text-green-400 text-xs font-medium">✓ Approved</div>}
+      {status === "previous" && <div className="mt-3 text-zinc-500 text-xs font-medium">Previous version</div>}
     </div>
   );
 }

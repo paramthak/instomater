@@ -1,4 +1,4 @@
-import { SessionMetadata, SessionListItem, ChatMessage } from "./types";
+import { SessionMetadata, SessionListItem, ChatMessage, CostLedger } from "./types";
 
 function apiBase(): string {
   if (process.env.NEXT_PUBLIC_API_BASE) return process.env.NEXT_PUBLIC_API_BASE;
@@ -34,6 +34,9 @@ export const api = {
 
   getSession: (id: string) =>
     req<{ metadata: SessionMetadata; chat_history: ChatMessage[] }>("GET", `/sessions/${id}`),
+
+  getCosts: (id: string) =>
+    req<CostLedger>("GET", `/sessions/${id}/costs`),
 
   deleteSession: (id: string) => req<void>("DELETE", `/sessions/${id}`),
 

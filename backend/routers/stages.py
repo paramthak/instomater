@@ -4,7 +4,7 @@ import asyncio
 from fastapi import APIRouter, HTTPException, status
 
 from models.session import ActionRequest
-from pipeline.orchestrator import advance, StageGateError, _handle_assembly_start, _handle_redo_clip
+from pipeline.orchestrator import advance, StageGateError, _handle_assembly_start, _handle_redo_clip, start_script_generation
 from routers.ws import manager
 from services import session_svc
 
@@ -15,6 +15,8 @@ _bg_tasks: set = set()
 _BACKGROUND_ACTIONS = {
     ("storyboard", "retry"),
     ("storyboard", "change"),
+    ("image_generation", "retry"),
+    ("image_generation", "change"),
 }
 
 def _fire(coro) -> None:
@@ -93,29 +95,24 @@ async def redo_clip(session_id: str, clip_index: int):
 
 @router.post("/{session_id}/start")
 async def start_session(session_id: str, body: dict):
-    """Called with the initial 'Who is this person' message to kick off stage 1."""
+    """Called with the initial person/context text to kick off script generation."""
     try:
         session_svc.get_session(session_id)
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    name = body.get("name", "").strip()
+    raw_input = body.get("name", "").strip()
     context = body.get("context", "").strip() or None
-    if not name:
-        raise HTTPException(status_code=400, detail="name is required")
+    if context:
+        raw_input = f"{raw_input}\n{context}".strip()
+    if not raw_input:
+        raise HTTPException(status_code=400, detail="input is required")
 
-    # Update person name in metadata
-    session_svc.update_metadata(session_id, person_name=name)
+    session_svc.update_metadata(session_id, person_name=raw_input)
+    session_svc.save_text_asset(session_id, "script_prompt.txt", raw_input)
 
-    # Append user reply + start topic brief generation in background
     from models.session import UserReply
-    session_svc.append_chat_message(session_id, UserReply(text=name + (f" — {context}" if context else "")).model_dump())
+    session_svc.append_chat_message(session_id, UserReply(text=raw_input).model_dump())
 
-    _fire(advance(
-        session_id=session_id,
-        action="start",
-        stage="topic_brief",
-        payload={"name": name, "context": context},
-        ws=manager,
-    ))
+    _fire(start_script_generation(session_id, manager))
     return {"status": "started"}

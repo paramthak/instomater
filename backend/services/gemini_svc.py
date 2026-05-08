@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Optional
@@ -15,6 +17,7 @@ from config import (
     BASE_DIR,
     GEMINI_API_KEY,
     GEMINI_IMAGE_MODEL,
+    GEMINI_TEXT_MODEL,
     GCP_LOCATION,
     GCP_PROJECT_ID,
     GCP_SERVICE_ACCOUNT_PATH,
@@ -25,11 +28,25 @@ from config import (
     VEO_POLL_INTERVAL_SEC,
     VEO_MAX_POLLS,
 )
+from services import cost_svc
 
-_image_client = genai.Client(api_key=GEMINI_API_KEY)
-_veo_client: genai.Client | None = None
+_gemini_client: genai.Client | None = None  # Gemini API — used for text/QA only
+_veo_client: genai.Client | None = None      # Vertex AI — used for Imagen image gen + Veo video gen
 
 _IMAGE_AUTO_RETRY = 2  # 1 auto-retry on transient errors (range stops after 2 attempts)
+_IMAGE_QA_FALLBACK = {
+    "approved": False,
+    "identity_match": False,
+    "identity_score": 0.0,
+    "scene_match": False,
+    "setting_match": False,
+    "era_consistent": False,
+    "no_text_on_displays": False,
+    "camera_angle_matches": False,
+    "looks_photoreal_not_ai": False,
+    "issues": ["audit_unavailable"],
+    "recommended_feedback": "Automated review unavailable; please inspect manually.",
+}
 _FFMPEG_FULL_BIN = Path("/opt/homebrew/opt/ffmpeg-full/bin")
 _MOTION_SAMPLE_FPS = 6
 _MOTION_SAMPLE_WIDTH = 96
@@ -51,6 +68,18 @@ def _service_account_path() -> Path:
     if not path.is_absolute():
         path = BASE_DIR / path
     return path
+
+
+def _get_gemini_client() -> genai.Client:
+    global _gemini_client
+    if _gemini_client is not None:
+        return _gemini_client
+    _gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+    return _gemini_client
+
+
+def _make_image_part(image_bytes: bytes, mime_type: str = "image/png") -> gtypes.Part:
+    return gtypes.Part.from_bytes(data=image_bytes, mime_type=mime_type)
 
 
 def _get_veo_client() -> genai.Client:
@@ -83,10 +112,6 @@ def _get_veo_client() -> genai.Client:
 
     _veo_client = genai.Client(**kwargs)
     return _veo_client
-
-
-def _make_image_part(image_bytes: bytes, mime_type: str = "image/png") -> gtypes.Part:
-    return gtypes.Part.from_bytes(data=image_bytes, mime_type=mime_type)
 
 
 def _tool_path(env_name: str, binary: str) -> str:
@@ -186,49 +211,197 @@ async def _select_best_video_candidate(candidates: list[bytes]) -> bytes:
     return scored[0][2]
 
 
+def _response_text(response) -> str:
+    text = getattr(response, "text", None)
+    if text:
+        return text.strip()
+    for candidate in getattr(response, "candidates", []) or []:
+        content = getattr(candidate, "content", None)
+        for part in getattr(content, "parts", []) or []:
+            part_text = getattr(part, "text", None)
+            if part_text:
+                return part_text.strip()
+    return ""
+
+
+def _parse_json_response(text: str) -> dict:
+    if not text:
+        return {}
+    fence = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.DOTALL)
+    if fence:
+        text = fence.group(1)
+    else:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start >= 0 and end > start:
+            text = text[start:end + 1]
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return {}
+
+
+async def audit_generated_image(
+    *,
+    reference_photo: bytes,
+    generated_image: bytes,
+    scene: dict,
+    prompt: str,
+    previous_image: Optional[bytes] = None,
+    reference_mime_type: str = "image/jpeg",
+    cost_context: Optional[dict] = None,
+) -> dict:
+    """
+    Vision QA for generated frames. Returns DENY fallback if the audit fails —
+    a missing audit must surface to the user, not auto-pass. Identity is only
+    checked when the scene's face_reference_mode == "match_age"; for
+    age-regressed or face-skipped scenes, identity_match is forced True so it
+    doesn't gate approval on a check that doesn't apply.
+    """
+    face_mode = scene.get("face_reference_mode", "match_age")
+    target_age = scene.get("face_reference_target_age")
+    check_identity = face_mode == "match_age"
+
+    parts = [
+        _make_image_part(reference_photo, reference_mime_type),
+        _make_image_part(generated_image, "image/png"),
+    ]
+    if previous_image:
+        parts.append(_make_image_part(previous_image, "image/png"))
+
+    identity_clause = (
+        "identity_match true ONLY if the face in Image 2 is unmistakably the same person as Image 1 — "
+        "matching at minimum: glasses present/absent, beard present/absent, hairline (full/receding/bald), "
+        "moustache, distinctive eye shape. If ANY of those flip vs Image 1, identity_match is false."
+        if check_identity
+        else f"This scene uses face_reference_mode='{face_mode}' (target age {target_age}). "
+             "Do NOT compare facial age with Image 1 — the subject is intentionally rendered at a different age. "
+             "Identity check is skipped; return identity_match=true."
+    )
+
+    parts.append(gtypes.Part.from_text(text=(
+        "Audit this generated still frame for an Instagram reel. Image 1 is the canonical "
+        "reference photo. Image 2 is the generated frame. Image 3, if present, is the previous approved frame.\n\n"
+        f"STORYBOARD SCENE JSON:\n{json.dumps(scene, indent=2)}\n\n"
+        f"IMAGE PROMPT (truncated):\n{prompt[:3000]}\n\n"
+        f"IDENTITY POLICY: {identity_clause}\n\n"
+        "Return strict JSON ONLY with these fields:\n"
+        "  approved (bool) — true ONLY if every other field is true\n"
+        "  identity_match (bool)\n"
+        "  identity_score (number 0..1)\n"
+        "  scene_match (bool) — does the scene depict the storyboard's setting_category and location_anchor?\n"
+        "  setting_match (bool) — same as scene_match in this single-image flow; keep for compat\n"
+        "  era_consistent (bool) — false if any anachronisms vs era_year and era_constraints (modern phones in 1980s, LED billboards in 1990s, etc.)\n"
+        "  no_text_on_displays (bool) — false if any readable text appears on a screen, monitor, sign, billboard, poster, or display surface\n"
+        "  camera_angle_matches (bool) — false if the framing is not the storyboard's image_description.camera_angle\n"
+        "  looks_photoreal_not_ai (bool) — false if the image has glossy AI skin, plastic textures, oversaturation, perfect symmetry, illustrative rendering, or other visible AI artifacts\n"
+        "  issues (array of short strings)\n"
+        "  recommended_feedback (string — directive sentences the regen prompt can apply)"
+    )))
+
+    try:
+        response = await asyncio.to_thread(
+            _get_gemini_client().models.generate_content,
+            model=GEMINI_TEXT_MODEL,
+            contents=gtypes.Content(parts=parts),
+            config=gtypes.GenerateContentConfig(
+                temperature=0.0,
+                response_mime_type="application/json",
+            ),
+        )
+        if cost_context and cost_context.get("session_id"):
+            cost_svc.log_gemini_text(
+                cost_context["session_id"],
+                model=GEMINI_TEXT_MODEL,
+                stage=cost_context.get("stage", "image_generation"),
+                asset_type=cost_context.get("asset_type", "image_qa"),
+                asset_id=cost_context.get("asset_id", "image"),
+                version=cost_context.get("version"),
+                usage_metadata=getattr(response, "usage_metadata", None),
+            )
+        data = {**_IMAGE_QA_FALLBACK, **_parse_json_response(_response_text(response))}
+        if not check_identity:
+            data["identity_match"] = True
+            data["identity_score"] = 1.0
+        else:
+            data["identity_match"] = bool(data.get("identity_match"))
+            data["identity_score"] = float(data.get("identity_score") or 0)
+        for key in ("scene_match", "setting_match", "era_consistent",
+                    "no_text_on_displays", "camera_angle_matches",
+                    "looks_photoreal_not_ai"):
+            data[key] = bool(data.get(key))
+        data["approved"] = (
+            data["identity_match"] and data["scene_match"] and data["era_consistent"]
+            and data["no_text_on_displays"] and data["camera_angle_matches"]
+            and data["looks_photoreal_not_ai"]
+        )
+        if not isinstance(data.get("issues"), list):
+            data["issues"] = [str(data.get("issues"))]
+        return data
+    except Exception as exc:
+        return {**_IMAGE_QA_FALLBACK, "audit_error": str(exc)}
+
+
 async def generate_image(
     prompt: str,
     reference_images: list[bytes],
     reference_mime_types: Optional[list[str]] = None,
+    cost_context: Optional[dict] = None,
 ) -> bytes:
     """
-    Generate an image with Nano Banana Pro.
-    reference_images: 1, 2, or 3 bytes objects (uploaded photo first, then chain image, then rejected)
-    Returns PNG bytes.
-    Auto-retries once on transient 5xx / network errors.
+    Generate an identity-consistent image via Vertex AI gemini-2.5-flash-image.
+    reference_images[0] is the uploaded reference photo (identity anchor).
+    Additional reference images are passed only on regen attempts (rejected
+    image as the "edit base"). No previous-frame chaining for new images —
+    that caused cascade drift.
+    Returns PNG/JPEG bytes. Auto-retries once on transient errors.
+
+    The prompt itself carries the face_reference_mode directive (match_age /
+    age_down_to / skip_face_ref) per IMAGE_PROMPT_SYSTEM. We do NOT prepend a
+    hardcoded identity lock here — that previously contradicted age-regressed
+    scenes by demanding the current-age face.
     """
     if reference_mime_types is None:
-        reference_mime_types = ["image/jpeg"] + ["image/png"] * (len(reference_images) - 1)
-
-    identity_lock = (
-        "CRITICAL IDENTITY LOCK: The first attached image is the canonical face reference. "
-        "Match that person's facial structure, eyes, nose, mouth, skin tone, hairline, and hair density. "
-        "Do not invent a different face, a different hairline, extra hair, or a different age. "
-        "If the scene is set earlier or later in life, age only subtly; identity from Image 1 wins over era styling."
-    )
+        reference_mime_types = ["image/jpeg"] + ["image/png"] * max(0, len(reference_images) - 1)
 
     parts = []
     for img_bytes, mime in zip(reference_images, reference_mime_types):
         parts.append(_make_image_part(img_bytes, mime))
-    parts.append(gtypes.Part.from_text(text=f"{identity_lock}\n\n{prompt}"))
+    parts.append(gtypes.Part.from_text(text=prompt))
 
     last_exc: Exception | None = None
     for attempt in range(_IMAGE_AUTO_RETRY):
         try:
             response = await asyncio.to_thread(
-                _image_client.models.generate_content,
+                _get_veo_client().models.generate_content,
                 model=GEMINI_IMAGE_MODEL,
-                contents=gtypes.Content(parts=parts),
+                contents=[gtypes.Content(role="user", parts=parts)],
                 config=gtypes.GenerateContentConfig(
                     response_modalities=["IMAGE", "TEXT"],
-                    image_config=gtypes.ImageConfig(aspect_ratio="9:16"),
+                    image_config=gtypes.ImageConfig(
+                        aspect_ratio="9:16",
+                        person_generation="ALLOW_ADULT",
+                    ),
                 ),
             )
-            # Extract image bytes from response
+            if not response.candidates:
+                pr = getattr(response, "prompt_feedback", None)
+                raise RuntimeError(f"No candidates returned. prompt_feedback={pr}")
             for part in response.candidates[0].content.parts:
                 if part.inline_data and part.inline_data.mime_type.startswith("image/"):
+                    if cost_context and cost_context.get("session_id"):
+                        cost_svc.log_gemini_image(
+                            cost_context["session_id"],
+                            model=GEMINI_IMAGE_MODEL,
+                            stage=cost_context.get("stage", "image_generation"),
+                            asset_type=cost_context.get("asset_type", "image"),
+                            asset_id=cost_context.get("asset_id", "image"),
+                            version=cost_context.get("version"),
+                            input_images=len(reference_images),
+                            usage_metadata=getattr(response, "usage_metadata", None),
+                        )
                     return part.inline_data.data
-            raise RuntimeError("Gemini returned no image in response")
+            raise RuntimeError("Model returned no image part in response")
         except Exception as exc:
             last_exc = exc
             err_str = str(exc).lower()
@@ -245,7 +418,6 @@ async def generate_image(
 async def submit_video_job(
     prompt: str,
     start_frame_bytes: bytes,
-    end_frame_bytes: bytes,
     duration_seconds: int,
     model_variant: str = "fast",
     rejected_video_bytes: Optional[bytes] = None,
@@ -253,17 +425,20 @@ async def submit_video_job(
     """
     Submit a Veo 3.1 job. Returns the operation name for polling.
     model_variant: "fast" | "standard"
+
+    Single-frame mode: only a start image is supplied. Veo drives the motion
+    from the prompt text alone — no last_frame anchor. This eliminates the
+    teleport and identity-morph artifacts caused by mismatched start/end
+    frames.
     """
     model = VEO_FAST_MODEL if model_variant == "fast" else VEO_STANDARD_MODEL
 
     start_image = gtypes.Image(image_bytes=start_frame_bytes, mime_type="image/png")
-    end_image = gtypes.Image(image_bytes=end_frame_bytes, mime_type="image/png")
 
     config = gtypes.GenerateVideosConfig(
         aspect_ratio="9:16",
         duration_seconds=duration_seconds,
         generate_audio=False,
-        last_frame=end_image,
         number_of_videos=VEO_SAMPLE_COUNT,
         person_generation="allow_adult",
         resolution=VEO_RESOLUTION,
@@ -318,7 +493,7 @@ async def poll_video_job(operation_name: str) -> tuple[str, Optional[bytes]]:
                     )
                 import httpx
 
-                api_key = getattr(_image_client._api_client, "api_key", None)
+                api_key = getattr(_get_gemini_client()._api_client, "api_key", None)
                 headers = {"X-Goog-Api-Key": api_key} if api_key else {}
                 async with httpx.AsyncClient(timeout=120, follow_redirects=True) as http:
                     resp = await http.get(v.uri, headers=headers)
@@ -332,10 +507,10 @@ async def poll_video_job(operation_name: str) -> tuple[str, Optional[bytes]]:
 async def run_video_job(
     prompt: str,
     start_frame_bytes: bytes,
-    end_frame_bytes: bytes,
     duration_seconds: int,
     model_variant: str = "fast",
     status_callback=None,
+    cost_context: Optional[dict] = None,
 ) -> bytes:
     """
     Submit + poll until done. Hard cap: VEO_MAX_POLLS iterations.
@@ -343,7 +518,7 @@ async def run_video_job(
     Raises VeoTimeoutError if cap exceeded.
     """
     operation_name = await submit_video_job(
-        prompt, start_frame_bytes, end_frame_bytes, duration_seconds, model_variant
+        prompt, start_frame_bytes, duration_seconds, model_variant
     )
 
     elapsed = 0
@@ -356,6 +531,17 @@ async def run_video_job(
 
         status, video_bytes = await poll_video_job(operation_name)
         if status == "SUCCEEDED":
+            if cost_context and cost_context.get("session_id"):
+                cost_svc.log_veo(
+                    cost_context["session_id"],
+                    model_variant=model_variant,
+                    stage=cost_context.get("stage", "video_generation"),
+                    asset_type=cost_context.get("asset_type", "video"),
+                    asset_id=cost_context.get("asset_id", "video"),
+                    version=cost_context.get("version"),
+                    duration_seconds=duration_seconds,
+                    sample_count=VEO_SAMPLE_COUNT,
+                )
             return video_bytes
         # RUNNING: continue loop
 

@@ -9,9 +9,9 @@ from fastapi import APIRouter, HTTPException, UploadFile, File, Form, status
 from PIL import Image
 
 from models.session import CreateSessionRequest, SessionMetadata, SessionListItem
-from pipeline.orchestrator import start_script_generation
+from pipeline.orchestrator import continue_after_photo_confirm
 from routers.ws import manager
-from services import session_svc
+from services import session_svc, cost_svc
 
 # Keep references so tasks aren't garbage-collected before they finish
 _bg_tasks: set = set()
@@ -68,6 +68,15 @@ async def get_session(session_id: str):
         "metadata": meta.model_dump(),
         "chat_history": history.messages,
     }
+
+
+@router.get("/{session_id}/costs")
+async def get_costs(session_id: str):
+    try:
+        session_svc.get_session(session_id)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return cost_svc.get_ledger(session_id)
 
 
 @router.delete("/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -130,19 +139,14 @@ async def upload_photo(session_id: str, file: UploadFile = File(...)):
 
 @router.post("/{session_id}/photo/confirm")
 async def confirm_photo(session_id: str):
-    """User clicked 'Use this photo' — advance to script generation."""
+    """User clicked 'Use this photo' after script approval."""
     try:
         meta = session_svc.get_session(session_id)
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    from models.session import StageEnum
-    meta = session_svc.update_metadata(
-        session_id,
-        current_stage=StageEnum.script,
-        completed_stages=[*meta.completed_stages, "photo_upload"] if "photo_upload" not in meta.completed_stages else meta.completed_stages,
-    )
+    if not meta.approval_state.script.approved:
+        raise HTTPException(status_code=409, detail="Approve the script before confirming a photo.")
 
-    # Fire script generation in background (don't await — let WS push updates)
-    _fire(start_script_generation(session_id, manager))
+    _fire(continue_after_photo_confirm(session_id, manager))
     return {"status": "ok"}

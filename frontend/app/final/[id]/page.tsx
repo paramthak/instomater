@@ -6,57 +6,30 @@ import { Sidebar } from "../../../components/Sidebar";
 import { ChatHistoryComponent } from "../../../components/ChatHistory";
 import { useSession } from "../../../hooks/useSession";
 import { api } from "../../../lib/api";
-import { StoryboardData } from "../../../lib/types";
-
-type SidePanel = "history" | "clips";
+import { CostLedger } from "../../../lib/types";
 
 export default function FinalReviewPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const { metadata, messages, loading: sessionLoading, reload } = useSession(id);
-  const [storyboard, setStoryboard] = useState<StoryboardData | null>(null);
-  const [assemblyLoading, setAssemblyLoading] = useState(false);
-  const [sidePanel, setSidePanel] = useState<SidePanel>("history");
+  const [costs, setCosts] = useState<CostLedger | null>(null);
 
   useEffect(() => {
-    const loadStoryboard = async () => {
+    const loadCosts = async () => {
       try {
-        const res = await fetch(api.assetUrl(id, "storyboard_approved.json"));
-        if (res.ok) setStoryboard(await res.json());
+        setCosts(await api.getCosts(id));
       } catch {
-        setStoryboard(null);
+        setCosts(null);
       }
     };
-    void loadStoryboard();
+    void loadCosts();
   }, [id]);
 
-  const handleRedoClip = async (clipIndex: number) => {
-    await api.redoClip(id, clipIndex);
-    router.push(`/sessions/${id}`);
-  };
-
-  const handleReassemble = async () => {
-    setAssemblyLoading(true);
-    const previousVersion = metadata?.approval_state.final_reel?.version ?? 0;
-    try {
-      await api.startAssembly(id);
-      const check = setInterval(async () => {
-        const { metadata: meta } = await api.getSession(id);
-        const nextVersion = meta.approval_state.final_reel?.version ?? 0;
-        if (meta.approval_state.final_reel?.assembled && nextVersion > previousVersion) {
-          clearInterval(check);
-          await reload();
-          setAssemblyLoading(false);
-        }
-      }, 3000);
-    } catch (e) {
-      alert(`Assembly failed: ${e}`);
-      setAssemblyLoading(false);
-    }
-  };
-
   const version = metadata?.approval_state.final_reel?.version ?? 1;
-  const videoUrl = api.assetUrl(id, `final/reel_v${version}.mp4`);
+  const [videoUrl, setVideoUrl] = useState("");
+  useEffect(() => {
+    setVideoUrl(api.assetUrl(id, `final/reel_v${version}.mp4`));
+  }, [id, version]);
 
   return (
     <div className="flex h-screen">
@@ -68,14 +41,6 @@ export default function FinalReviewPage() {
             {metadata?.person_name} — Final Review
           </span>
           <div className="flex items-center gap-3">
-            {assemblyLoading && <span className="text-zinc-400 text-sm animate-pulse">Assembling…</span>}
-            <button
-              onClick={handleReassemble}
-              disabled={assemblyLoading || sessionLoading}
-              className="px-4 py-2 bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50 text-white rounded-lg text-sm"
-            >
-              Re-assemble
-            </button>
             <a
               href={videoUrl}
               download={`${metadata?.person_name ?? "reel"}_v${version}.mp4`}
@@ -102,78 +67,43 @@ export default function FinalReviewPage() {
 
           {/* Review panel — right 40% */}
           <div className="w-2/5 min-w-[360px] border-l border-zinc-800 bg-zinc-950 flex flex-col">
-            <div className="p-3 border-b border-zinc-800 shrink-0">
-              <div className="grid grid-cols-2 rounded-lg bg-zinc-900 p-1">
-                <button
-                  onClick={() => setSidePanel("history")}
-                  className={`px-3 py-2 rounded-md text-sm transition-colors ${
-                    sidePanel === "history"
-                      ? "bg-zinc-700 text-white"
-                      : "text-zinc-400 hover:text-white"
-                  }`}
-                >
-                  Conversation
-                </button>
-                <button
-                  onClick={() => setSidePanel("clips")}
-                  className={`px-3 py-2 rounded-md text-sm transition-colors ${
-                    sidePanel === "clips"
-                      ? "bg-zinc-700 text-white"
-                      : "text-zinc-400 hover:text-white"
-                  }`}
-                >
-                  Clips
-                </button>
+            <div className="flex-1 overflow-y-auto p-4 space-y-4">
+              <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
+                <h3 className="text-white font-semibold">Costs</h3>
+                {costs ? (
+                  <div className="mt-3 space-y-3 text-sm">
+                    <div className="flex justify-between text-zinc-100">
+                      <span>Total</span>
+                      <span>${costs.summary.total_usd.toFixed(4)}</span>
+                    </div>
+                    {Object.entries(costs.summary.by_provider ?? {}).map(([provider, value]) => (
+                      <div key={provider} className="flex justify-between text-zinc-400 text-xs">
+                        <span>{provider}</span>
+                        <span>${value.toFixed(4)}</span>
+                      </div>
+                    ))}
+                    <div className="pt-2 border-t border-zinc-800 text-zinc-500 text-xs">
+                      {costs.summary.entry_count ?? costs.entries.length} provider attempts logged.
+                    </div>
+                  </div>
+                ) : (
+                  <p className="mt-2 text-zinc-500 text-sm">No cost ledger found.</p>
+                )}
               </div>
-            </div>
 
-            {sidePanel === "history" ? (
-              <div className="flex-1 overflow-y-auto">
+              <div className="bg-zinc-900 border border-zinc-800 rounded-xl">
+                <div className="px-4 py-3 border-b border-zinc-800">
+                  <h3 className="text-white font-semibold">Conversation</h3>
+                </div>
                 <ChatHistoryComponent
                   messages={messages}
                   sessionId={id}
                   currentStage={metadata?.current_stage}
+                  assemblyLocked={true}
                   onAction={reload}
                 />
               </div>
-            ) : (
-              <div className="flex-1 overflow-y-auto p-4 space-y-3">
-                <h3 className="text-zinc-400 text-xs uppercase tracking-wider">Clips</h3>
-                {storyboard?.scenes.map((scene, i) => {
-                  const clipIndex = i + 1;
-                  const clipPath = `videos/clip_${String(clipIndex).padStart(2, "0")}_approved.mp4`;
-                  return (
-                    <div key={clipIndex} className="bg-zinc-800 rounded-xl overflow-hidden">
-                      <div className="flex gap-3 p-3">
-                        <div className="w-16 aspect-[9/16] bg-zinc-900 rounded overflow-hidden shrink-0">
-                          <video
-                            src={api.assetUrl(id, clipPath)}
-                            className="w-full h-full object-cover"
-                            muted
-                          />
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <p className="text-white text-sm font-medium">Clip {clipIndex} of {storyboard.total_scenes}</p>
-                          <p className="text-zinc-400 text-xs mt-0.5">{scene.duration_seconds}s</p>
-                          <p className="text-zinc-500 text-xs mt-1">
-                            in: {scene.transition_in} · out: {scene.transition_out} {scene.transition_duration_seconds}s
-                          </p>
-                          <button
-                            onClick={() => handleRedoClip(clipIndex)}
-                            className="mt-2 px-3 py-1 bg-zinc-700 hover:bg-zinc-600 text-white rounded text-xs"
-                          >
-                            Re-do this clip
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-                {!storyboard && (
-                  <div className="text-zinc-500 text-sm">No approved storyboard found.</div>
-                )}
-              </div>
-            )}
+            </div>
           </div>
         </div>
       </div>

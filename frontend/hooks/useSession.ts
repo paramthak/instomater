@@ -5,29 +5,50 @@ import { SessionMetadata, ChatMessage, WSMessage } from "../lib/types";
 import { api } from "../lib/api";
 import { useWebSocket } from "./useWebSocket";
 
+const SESSION_POLL_MS = 4000;
+
+function samePayload(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  try {
+    return JSON.stringify(a) === JSON.stringify(b);
+  } catch {
+    return false;
+  }
+}
+
 export function useSession(sessionId: string | null) {
   const [metadata, setMetadata] = useState<SessionMetadata | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (options: { silent?: boolean } = {}) => {
     if (!sessionId) return;
-    setLoading(true);
+    if (!options.silent) setLoading(true);
     try {
       const { metadata: meta, chat_history } = await api.getSession(sessionId);
-      setMetadata(meta);
-      setMessages(chat_history as ChatMessage[]);
+      const nextMessages = chat_history as ChatMessage[];
+      setMetadata((prev) => (samePayload(prev, meta) ? prev : meta));
+      setMessages((prev) => (samePayload(prev, nextMessages) ? prev : nextMessages));
+      setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load session");
     } finally {
-      setLoading(false);
+      if (!options.silent) setLoading(false);
     }
   }, [sessionId]);
 
   useEffect(() => {
-    void Promise.resolve().then(load);
+    void Promise.resolve().then(() => load());
   }, [load]);
+
+  useEffect(() => {
+    if (!sessionId) return;
+    const interval = setInterval(() => {
+      void load({ silent: true });
+    }, SESSION_POLL_MS);
+    return () => clearInterval(interval);
+  }, [load, sessionId]);
 
   const handleWS = useCallback((msg: WSMessage) => {
     if (msg.type === "status") {
@@ -54,7 +75,7 @@ export function useSession(sessionId: string | null) {
         }
         return [...prev, pill];
       });
-      void Promise.resolve().then(load);
+      void load({ silent: true });
     }
 
     if (msg.type === "asset_ready") {
@@ -68,7 +89,7 @@ export function useSession(sessionId: string | null) {
           )
         );
       }
-      load();
+      void load({ silent: true });
     }
 
     if (msg.type === "error") {
@@ -81,7 +102,7 @@ export function useSession(sessionId: string | null) {
           )
         );
       }
-      load(); // reload to show error card
+      void load({ silent: true }); // reload to show error card
     }
   }, [load]);
 

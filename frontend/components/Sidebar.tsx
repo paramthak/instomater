@@ -6,13 +6,11 @@ import { SessionListItem } from "../lib/types";
 import { api } from "../lib/api";
 
 const STAGE_LABELS: Record<string, string> = {
-  topic_brief: "Topic brief",
-  photo_upload: "Photo upload",
   script: "Script",
+  photo_upload: "Photo upload",
   voiceover: "Voiceover",
   alignment: "Alignment",
   storyboard: "Storyboard",
-  clarifying_questions: "Clarifying questions",
   image_generation: "Generating images",
   video_generation: "Generating videos",
   assembly: "Assembly",

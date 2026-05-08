@@ -36,9 +36,28 @@ SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
 
 MIN_DISK_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB
 
-OPENAI_MODEL = "gpt-4.1"
+# OpenAI models — May 2026.
+# gpt-5.4 is the frontier model with reasoning.effort: none|low|medium|high|xhigh.
+# Storyboard uses high reasoning because it's a constraint-satisfaction problem
+# (timing math, word-boundary scene cuts, setting variety, shot sequencing).
+# Other stages use medium. Audio tag injection uses gpt-5.4-mini at low effort.
+OPENAI_MODEL_SCRIPT = os.getenv("OPENAI_MODEL_SCRIPT", "gpt-5.4")
+OPENAI_MODEL_AUDIO_TAGS = os.getenv("OPENAI_MODEL_AUDIO_TAGS", "gpt-5.4-mini")
+OPENAI_MODEL_STORYBOARD = os.getenv("OPENAI_MODEL_STORYBOARD", "gpt-5.4")
+OPENAI_MODEL_IMAGE_PROMPT = os.getenv("OPENAI_MODEL_IMAGE_PROMPT", "gpt-5.4")
+OPENAI_MODEL_VIDEO_PROMPT = os.getenv("OPENAI_MODEL_VIDEO_PROMPT", "gpt-5.4")
+
+SCRIPT_REASONING_EFFORT = os.getenv("SCRIPT_REASONING_EFFORT", "medium")
+AUDIO_TAGS_REASONING_EFFORT = os.getenv("AUDIO_TAGS_REASONING_EFFORT", "low")
+STORYBOARD_REASONING_EFFORT = os.getenv("STORYBOARD_REASONING_EFFORT", "high")
+IMAGE_PROMPT_REASONING_EFFORT = os.getenv("IMAGE_PROMPT_REASONING_EFFORT", "medium")
+VIDEO_PROMPT_REASONING_EFFORT = os.getenv("VIDEO_PROMPT_REASONING_EFFORT", "medium")
+
+# Image QA: identity-match score threshold below which auto-retry triggers.
+IMAGE_QA_IDENTITY_THRESHOLD = float(os.getenv("IMAGE_QA_IDENTITY_THRESHOLD", "0.68"))
+
 GEMINI_TEXT_MODEL = os.getenv("GEMINI_TEXT_MODEL", "gemini-2.5-flash")
-GEMINI_IMAGE_MODEL = "gemini-3-pro-image-preview"
+GEMINI_IMAGE_MODEL = os.getenv("GEMINI_IMAGE_MODEL", "gemini-2.5-flash-image")
 VEO_STANDARD_MODEL = os.getenv("VEO_STANDARD_MODEL", "veo-3.1-generate-001")
 VEO_FAST_MODEL = os.getenv("VEO_FAST_MODEL", "veo-3.1-fast-generate-001")
 VEO_RESOLUTION = os.getenv("VEO_RESOLUTION", "720p")
@@ -107,11 +126,6 @@ def get_elevenlabs_voice_ids() -> dict[str, str]:
     }
 
 
-def get_elevenlabs_audio_tempo() -> float:
-    refresh_elevenlabs_env()
-    return _float_env("ELEVENLABS_AUDIO_TEMPO", 1.35, 1.0, 2.0)
-
-
 ELEVENLABS_TTS_MODEL = os.getenv("ELEVENLABS_TTS_MODEL", "eleven_v3")
 ELEVENLABS_TTS_OUTPUT_FORMAT = os.getenv(
     "ELEVENLABS_TTS_OUTPUT_FORMAT",
@@ -120,17 +134,6 @@ ELEVENLABS_TTS_OUTPUT_FORMAT = os.getenv(
 ELEVENLABS_TTS_LANGUAGE_CODE = get_elevenlabs_tts_language_code()
 ELEVENLABS_TTS_VOICE_SETTINGS = get_elevenlabs_tts_voice_settings()
 ELEVENLABS_VOICE_IDS = get_elevenlabs_voice_ids()
-ELEVENLABS_AUDIO_TEMPO = get_elevenlabs_audio_tempo()
 
 VEO_POLL_INTERVAL_SEC = 10
 VEO_MAX_POLLS = 90  # 15 minutes hard cap
-
-HOOK_CATEGORIES = [
-    "Storytelling",
-    "Authority",
-    "Myth_busting",
-    "Comparison",
-    "Educational",
-    "Day_in_the_Life",
-    "Pattern_Interrupt",
-]

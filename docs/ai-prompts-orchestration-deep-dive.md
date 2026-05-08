@@ -11,11 +11,11 @@ There are two prompt files, and both are active:
 | File | Runtime status | What it contains |
 |---|---|---|
 | [backend/pipeline/skill_prompts.py](/Users/paramthakkar/Development/Projects/Instomater/backend/pipeline/skill_prompts.py:1) | Active | Script and storyboard prompts from the uploaded writer skills. |
-| [backend/pipeline/prompts.py](/Users/paramthakkar/Development/Projects/Instomater/backend/pipeline/prompts.py:1) | Active | Topic brief, clarifying questions, image prompts, video prompt fallback, and video prompt regeneration. |
+| [backend/pipeline/prompts.py](/Users/paramthakkar/Development/Projects/Instomater/backend/pipeline/prompts.py:1) | Active | Image prompts, video prompt fallback, and video prompt regeneration. |
 
 The proof is here:
 
-[backend/services/openai_svc.py](/Users/paramthakkar/Development/Projects/Instomater/backend/services/openai_svc.py:14) imports topic/image/video prompts from `pipeline.prompts`.
+[backend/services/openai_svc.py](/Users/paramthakkar/Development/Projects/Instomater/backend/services/openai_svc.py:14) imports image/video prompts from `pipeline.prompts`.
 
 [backend/services/openai_svc.py](/Users/paramthakkar/Development/Projects/Instomater/backend/services/openai_svc.py:24) imports script/storyboard prompts from `pipeline.skill_prompts`.
 
@@ -25,13 +25,10 @@ There are no inactive script/storyboard prompts left in `prompts.py`.
 
 | Stage | Exact source |
 |---|---|
-| Topic brief | [TOPIC_BRIEF_SYSTEM](/Users/paramthakkar/Development/Projects/Instomater/backend/pipeline/prompts.py:9) |
-| Topic brief rewrite | [TOPIC_BRIEF_REWRITE_SYSTEM](/Users/paramthakkar/Development/Projects/Instomater/backend/pipeline/prompts.py:44) |
 | Script generation | [SCRIPT_WRITER_SYSTEM](/Users/paramthakkar/Development/Projects/Instomater/backend/pipeline/skill_prompts.py:8) |
 | Script rewrite | [SCRIPT_REWRITE_SYSTEM](/Users/paramthakkar/Development/Projects/Instomater/backend/pipeline/skill_prompts.py:190) |
 | Storyboard generation | [STORYBOARD_WRITER_SYSTEM](/Users/paramthakkar/Development/Projects/Instomater/backend/pipeline/skill_prompts.py:210) |
 | Storyboard rewrite | [STORYBOARD_REWRITE_SYSTEM](/Users/paramthakkar/Development/Projects/Instomater/backend/pipeline/skill_prompts.py:386) |
-| Clarifying questions | [CLARIFYING_QUESTIONS_SYSTEM](/Users/paramthakkar/Development/Projects/Instomater/backend/pipeline/prompts.py:56) |
 | First image prompt | [IMAGE_PROMPT_1_SYSTEM](/Users/paramthakkar/Development/Projects/Instomater/backend/pipeline/prompts.py:88) |
 | Chain image prompt | [IMAGE_PROMPT_CHAIN_SYSTEM](/Users/paramthakkar/Development/Projects/Instomater/backend/pipeline/prompts.py:143) |
 | Image regeneration prompt | [IMAGE_PROMPT_REGEN_SYSTEM](/Users/paramthakkar/Development/Projects/Instomater/backend/pipeline/prompts.py:177) |
@@ -57,8 +54,7 @@ Main config is in [backend/config.py](/Users/paramthakkar/Development/Projects/I
 | ElevenLabs language | [get_elevenlabs_tts_language_code](/Users/paramthakkar/Development/Projects/Instomater/backend/config.py:86) |
 | ElevenLabs voice settings | [get_elevenlabs_tts_voice_settings](/Users/paramthakkar/Development/Projects/Instomater/backend/config.py:91) |
 | ElevenLabs voice IDs | [get_elevenlabs_voice_ids](/Users/paramthakkar/Development/Projects/Instomater/backend/config.py:102) |
-| ElevenLabs post-TTS tempo | [get_elevenlabs_audio_tempo](/Users/paramthakkar/Development/Projects/Instomater/backend/config.py:110) |
-| Hook categories | [HOOK_CATEGORIES](/Users/paramthakkar/Development/Projects/Instomater/backend/config.py:128) |
+| ElevenLabs speed | [get_elevenlabs_tts_voice_settings](/Users/paramthakkar/Development/Projects/Instomater/backend/config.py:91) |
 
 Important: ElevenLabs env values are refreshed dynamically:
 
@@ -129,7 +125,6 @@ Normalization does this:
 - removes raw audio tags like `[pause]`
 - removes hashtags
 - collapses whitespace
-- replaces banned corporate-poetic phrases with plainer phrases
 - infers `hook/setup/build/landing` if the model gave only `full_text`
 - recalculates `estimated_word_count`
 - recalculates `estimated_duration_seconds`
@@ -150,16 +145,14 @@ Exact script validation rules:
 
 | Check | Logic |
 |---|---|
-| Required top-level fields | Must include `hook_category`, `hook_subtype_used`, `perspective`, `structure`, `full_text`, counts, duration, name count, self-check. |
+| Required top-level fields | Must include `perspective`, `structure`, `full_text`, counts, duration, name count, and self-check. |
 | Required structure fields | Must include `hook`, `setup`, `build`, `landing`. |
-| Hook subtype | Must be `pattern_interrupt`, `curiosity_gap`, or `proof_first`. |
-| Perspective | Must be `first_person`, `second_person`, or `third_person_documentary`. |
+| Perspective | Must be `first_person` or `third_person_documentary`. |
 | Full text integrity | `full_text` must exactly equal `hook + setup + build + landing`. |
-| Total word count | Must be between 70 and 125 words. |
+| Total word count | Must be between 70 and 135 words. |
 | Hook word count | Must be 4-22 words. |
 | Section word counts | `setup`: 6-45, `build`: 15-95, `landing`: 4-40. |
 | Sentence length | No sentence above 34 words. |
-| Banned phrases | Rejects phrases listed in [_SCRIPT_BANNED_PHRASES](/Users/paramthakkar/Development/Projects/Instomater/backend/services/openai_svc.py:38). |
 | Landing start | Landing cannot begin with `today`. |
 | No hashtags | Rejects `#`. |
 | No raw audio tags | Rejects bracket tags in final displayed script. |
@@ -263,27 +256,6 @@ Error/status cards live in chat history, not in a separate validation service.
 
 ## 6. Prompt Construction Per Stage
 
-### Topic Brief
-
-Prompt source:
-
-[TOPIC_BRIEF_SYSTEM](/Users/paramthakkar/Development/Projects/Instomater/backend/pipeline/prompts.py:9)
-
-Runtime user message:
-
-[generate_topic_brief](/Users/paramthakkar/Development/Projects/Instomater/backend/services/openai_svc.py:765)
-
-Exact runtime input shape:
-
-```text
-person_name: {name}
-user_context: {context or '(none provided)'}
-```
-
-Rewrite runtime user message:
-
-[rewrite_topic_brief](/Users/paramthakkar/Development/Projects/Instomater/backend/services/openai_svc.py:770)
-
 ### Script
 
 Prompt source:
@@ -297,17 +269,19 @@ System prompt is filled here:
 It replaces:
 
 ```text
-{topic_brief}
-{assigned_hook_category}
+{script_prompt}
+The script prompt receives the raw first user message: person name plus any
+optional context typed into the opening composer.
 ```
 
 Generation flow:
 
 [generate_script](/Users/paramthakkar/Development/Projects/Instomater/backend/services/openai_svc.py:849)
 
-Hook category assignment:
+Hook selection:
 
-If no caller passes a hook category, [generate_script](/Users/paramthakkar/Development/Projects/Instomater/backend/services/openai_svc.py:849) picks one randomly from [HOOK_CATEGORIES](/Users/paramthakkar/Development/Projects/Instomater/backend/config.py:128). The current orchestrator call, [start_script_generation](/Users/paramthakkar/Development/Projects/Instomater/backend/pipeline/orchestrator.py:357), passes only the approved topic brief, so the hook category is backend-random by default.
+The model chooses the best hook dynamically inside the script text. The JSON
+keeps `structure.hook` but does not expose hook category/subtype/formula fields.
 
 Exact first user message:
 
@@ -323,9 +297,7 @@ Script validation and normalization:
 
 | Logic | Source |
 |---|---|
-| Banned phrases list | [backend/services/openai_svc.py](/Users/paramthakkar/Development/Projects/Instomater/backend/services/openai_svc.py:38) |
 | Script word count constants | [backend/services/openai_svc.py](/Users/paramthakkar/Development/Projects/Instomater/backend/services/openai_svc.py:90) |
-| Banned phrase replacements | [backend/services/openai_svc.py](/Users/paramthakkar/Development/Projects/Instomater/backend/services/openai_svc.py:95) |
 | Normalize script | [backend/services/openai_svc.py](/Users/paramthakkar/Development/Projects/Instomater/backend/services/openai_svc.py:436) |
 | Validate script | [backend/services/openai_svc.py](/Users/paramthakkar/Development/Projects/Instomater/backend/services/openai_svc.py:482) |
 | Deterministic fallback script | [backend/services/openai_svc.py](/Users/paramthakkar/Development/Projects/Instomater/backend/services/openai_svc.py:795) |
@@ -382,10 +354,6 @@ Forced alignment call:
 
 [forced_alignment](/Users/paramthakkar/Development/Projects/Instomater/backend/services/elevenlabs_svc.py:192)
 
-Audio tempo boost:
-
-[_apply_audio_tempo](/Users/paramthakkar/Development/Projects/Instomater/backend/services/elevenlabs_svc.py:58)
-
 ### Storyboard
 
 Prompt source:
@@ -401,7 +369,6 @@ It replaces:
 ```text
 {script}
 {alignment}
-{topic_brief}
 ```
 
 Generation flow:
@@ -438,26 +405,6 @@ Rewrite runtime flow:
 
 [rewrite_storyboard](/Users/paramthakkar/Development/Projects/Instomater/backend/services/openai_svc.py:943)
 
-### Clarifying Questions
-
-Prompt source:
-
-[CLARIFYING_QUESTIONS_SYSTEM](/Users/paramthakkar/Development/Projects/Instomater/backend/pipeline/prompts.py:56)
-
-Runtime content:
-
-[generate_clarifying_questions](/Users/paramthakkar/Development/Projects/Instomater/backend/services/openai_svc.py:987)
-
-It sends:
-
-```text
-storyboard: {storyboard json}
-
-uploaded_photo: (attached as Image 1)
-```
-
-plus the uploaded photo as image input.
-
 ### Image Prompts
 
 First image prompt source:
@@ -474,7 +421,6 @@ It sends:
 uploaded_photo: (attached as Image 1)
 storyboard_scene_1: {scene json}
 frame_role_context: {frame_context json}
-clarifying_answers: {answers json}
 person_name: {person_name}
 ```
 
@@ -486,7 +432,7 @@ Chain image runtime content:
 
 [write_image_prompt_chain](/Users/paramthakkar/Development/Projects/Instomater/backend/services/openai_svc.py:1031)
 
-It sends the uploaded photo, previous approved image, storyboard scene, image slot, frame role context, and clarifying answers.
+It sends the uploaded photo, previous approved image, storyboard scene, image slot, and frame role context.
 
 Image regeneration prompt source:
 
@@ -496,7 +442,7 @@ Image regeneration runtime content:
 
 [write_image_prompt_regen](/Users/paramthakkar/Development/Projects/Instomater/backend/services/openai_svc.py:1061)
 
-It sends uploaded photo, previous chain image when available, rejected iteration, previous prompt, feedback, scene, slot, frame context, and clarifying answers.
+It sends uploaded photo, previous chain image when available, rejected iteration, previous prompt, feedback, scene, slot, and frame context.
 
 Frame-role context is created here:
 
@@ -610,9 +556,6 @@ Stage gate:
 
 | User/backend action | Handler |
 |---|---|
-| `topic_brief.start` | [_handle_topic_brief_start](/Users/paramthakkar/Development/Projects/Instomater/backend/pipeline/orchestrator.py:258) |
-| `topic_brief.change` | [_handle_topic_brief_change](/Users/paramthakkar/Development/Projects/Instomater/backend/pipeline/orchestrator.py:289) |
-| `topic_brief.approve` | [_handle_topic_brief_approve](/Users/paramthakkar/Development/Projects/Instomater/backend/pipeline/orchestrator.py:321) |
 | `script.retry` | [_handle_script_retry](/Users/paramthakkar/Development/Projects/Instomater/backend/pipeline/orchestrator.py:343) |
 | script generation | [start_script_generation](/Users/paramthakkar/Development/Projects/Instomater/backend/pipeline/orchestrator.py:347) |
 | `script.change` | [_handle_script_change](/Users/paramthakkar/Development/Projects/Instomater/backend/pipeline/orchestrator.py:383) |
@@ -625,8 +568,6 @@ Stage gate:
 | storyboard generation | [_generate_storyboard](/Users/paramthakkar/Development/Projects/Instomater/backend/pipeline/orchestrator.py:575) |
 | `storyboard.change` | [_handle_storyboard_change](/Users/paramthakkar/Development/Projects/Instomater/backend/pipeline/orchestrator.py:624) |
 | `storyboard.approve` | [_handle_storyboard_approve](/Users/paramthakkar/Development/Projects/Instomater/backend/pipeline/orchestrator.py:668) |
-| clarifying questions generation | [_generate_clarifying_questions](/Users/paramthakkar/Development/Projects/Instomater/backend/pipeline/orchestrator.py:697) |
-| `clarifying_questions.answer` | [_handle_clarifying_answer](/Users/paramthakkar/Development/Projects/Instomater/backend/pipeline/orchestrator.py:718) |
 | image generation | [_generate_image](/Users/paramthakkar/Development/Projects/Instomater/backend/pipeline/orchestrator.py:741) |
 | `image_generation.change` | [_handle_image_change](/Users/paramthakkar/Development/Projects/Instomater/backend/pipeline/orchestrator.py:838) |
 | `image_generation.approve` | [_handle_image_approve](/Users/paramthakkar/Development/Projects/Instomater/backend/pipeline/orchestrator.py:877) |
@@ -773,13 +714,11 @@ backend/sessions/<session_id>/
 Useful files:
 
 ```text
-topic_brief_vX.json
+script_prompt.txt
 script_vX.json
 voiceover_vX.meta.json
 alignment.json
 storyboard_vX.json
-clarifying_questions.json
-clarifying_answers.json
 images/img_NN_prompt_vX.txt
 images/img_NN_vX.png
 images/img_NN_approved.png
@@ -807,7 +746,7 @@ If you want to understand the whole AI brain in order:
 
 1. [config.py](/Users/paramthakkar/Development/Projects/Instomater/backend/config.py:39) for provider/model settings.
 2. [skill_prompts.py](/Users/paramthakkar/Development/Projects/Instomater/backend/pipeline/skill_prompts.py:8) for active script/storyboard prompts.
-3. [prompts.py](/Users/paramthakkar/Development/Projects/Instomater/backend/pipeline/prompts.py:9) for topic, image, video, and clarifying prompts.
+3. [prompts.py](/Users/paramthakkar/Development/Projects/Instomater/backend/pipeline/prompts.py:9) for topic, image, and video prompts.
 4. [openai_svc.py imports](/Users/paramthakkar/Development/Projects/Instomater/backend/services/openai_svc.py:13) to see active prompt routing.
 5. [openai_svc.py generation functions](/Users/paramthakkar/Development/Projects/Instomater/backend/services/openai_svc.py:763) to see exact user messages, retries, validation, and fallback.
 6. [elevenlabs_svc.py](/Users/paramthakkar/Development/Projects/Instomater/backend/services/elevenlabs_svc.py:31) for TTS tags, voice settings, speed, and alignment.

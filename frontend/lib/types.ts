@@ -1,11 +1,9 @@
 export type StageEnum =
-  | "topic_brief"
-  | "photo_upload"
   | "script"
+  | "photo_upload"
   | "voiceover"
   | "alignment"
   | "storyboard"
-  | "clarifying_questions"
   | "image_generation"
   | "video_generation"
   | "assembly"
@@ -20,8 +18,9 @@ export interface SessionMetadata {
   current_substage: { type: string; index: number; iteration: number } | null;
   completed_stages: string[];
   approval_state: ApprovalState;
-  settings: { voice_id?: string; voice_gender?: string };
+  settings: { voice_id?: string; voice_gender?: string; voice_speed?: number; autopilot_enabled?: boolean };
   photo_ext?: string;
+  assembly_locked?: boolean;
 }
 
 export interface ImageApproval {
@@ -48,7 +47,6 @@ export interface StageApproval {
 }
 
 export interface ApprovalState {
-  topic_brief: StageApproval;
   script: StageApproval;
   voiceover: StageApproval;
   storyboard: StageApproval;
@@ -103,7 +101,7 @@ export interface AssetCard {
   subtype: string;
   iteration: number;
   data: Record<string, unknown>;
-  status: "pending_approval" | "approved" | "rejected";
+  status: "pending_approval" | "approved" | "previous" | "rejected";
   timestamp: string;
 }
 
@@ -138,68 +136,65 @@ export type ChatMessage =
 
 // ── Asset-specific data shapes ───────────────────────────────────────────────
 
-export interface LifeMilestone {
-  year: number;
-  event: string;
-}
-
-export interface TopicBriefData {
-  person_name: string;
-  person_slug: string;
-  gender: string;
-  origin_country: string;
-  origin_city: string;
-  current_role_or_legacy: string;
-  key_life_milestones: LifeMilestone[];
-  narrative_arc_options: string[];
-  selected_narrative_arc: string;
-  tone_suggestions: string[];
-  selected_tone: string;
-  factual_anchors_for_visuals: string[];
-  estimated_target_duration_seconds: number;
-}
-
 export interface ScriptData {
-  hook_category: string;
-  hook_formula_used: string;
-  hook_subtype_used?: string;
-  perspective: string;
-  structure?: {
-    hook: string;
-    setup: string;
-    build: string;
-    landing: string;
-  };
   full_text: string;
+  display_text?: string;
   estimated_word_count: number;
   estimated_duration_seconds: number;
-  name_mentions_count?: number;
-  self_check?: Record<string, unknown>;
+  cost_summary?: CostSummary;
+}
+
+export type CameraAngle =
+  | "front-3/4"
+  | "side-profile"
+  | "over-shoulder"
+  | "low-angle"
+  | "high-angle"
+  | "wide-establish";
+
+export type FaceReferenceMode = "match_age" | "age_down_to" | "skip_face_ref";
+
+export interface ImageDescription {
+  subject_and_pose: string;
+  environment: string;
+  camera_framing: string;
+  lighting: string;
+  color_palette: string;
+  era_constraints: string;
+  camera_angle: CameraAngle;
+  no_text_displays: boolean;
+  realism_directive: string;
+}
+
+export interface MotionArc {
+  camera_move: string;
+  subject_action: string;
+  traversal: string;
+  era_atmosphere: string;
 }
 
 export interface Scene {
   scene_id: string;
-  script_part?: "hook" | "setup" | "build" | "landing";
   start_time: number;
   end_time: number;
   duration_seconds: number;
-  voiceover_words: string;
-  voiceover_text?: string;
-  visual_description: string;
-  image_slot_start: string;
-  image_slot_end: string;
-  image_start?: string;
-  image_end?: string;
+  voiceover_text: string;
+  voiceover_words?: string; // legacy alias
+  setting_category?: string;
+  location_anchor?: string;
+  visual_beat?: string;
+  subject_life_stage?: string;
+  age_continuity_note?: string;
+  era_year?: number | null;
   shot_type?: "WS" | "MS" | "CU" | "ECU";
   camera_motion?: string;
-  image_start_description?: Record<string, string>;
-  image_end_description?: Record<string, string>;
-  video_motion_prompt?: Record<string, string>;
-  transition_in: string;
-  transition_out: string;
-  transition_out_detail?: { type: string; duration_seconds: number };
-  transition_duration_seconds: number;
-  visual_narration_check?: string;
+  image_slot: string;
+  image_description: ImageDescription;
+  motion_arc: MotionArc;
+  face_reference_mode: FaceReferenceMode;
+  face_reference_target_age: number | null;
+  transition_out: { type: string; duration_seconds: number } | string;
+  transition_duration_seconds?: number;
 }
 
 export interface StoryboardData {
@@ -216,17 +211,19 @@ export interface StoryboardData {
   };
   scenes: Scene[];
   self_check?: Record<string, unknown>;
+  cost_summary?: CostSummary;
 }
 
-export interface ClarifyingQuestion {
-  id: string;
-  question_text: string;
-  options: string[];
-  rationale: string;
+export interface CostSummary {
+  total_usd: number;
+  by_provider?: Record<string, number>;
+  by_stage?: Record<string, number>;
+  entry_count?: number;
 }
 
-export interface ClarifyingQuestionsData {
-  questions: ClarifyingQuestion[];
+export interface CostLedger {
+  entries: Array<Record<string, unknown>>;
+  summary: CostSummary;
 }
 
 // ── WS messages ──────────────────────────────────────────────────────────────

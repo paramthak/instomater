@@ -44,3 +44,6 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
+
+# Legacy archived sessions (auto-moved on schema bump)
+/backend/sessions_legacy/

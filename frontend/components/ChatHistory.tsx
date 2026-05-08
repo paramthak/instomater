@@ -1,24 +1,20 @@
 "use client";
 
-import { ChatMessage, AssetCard, TopicBriefData, ScriptData, StoryboardData, ClarifyingQuestionsData } from "../lib/types";
+import { ChatMessage, AssetCard, ScriptData, StoryboardData } from "../lib/types";
 import { StatusPillComponent } from "./StatusPill";
 import { ErrorCardComponent } from "./ErrorCard";
-import { TopicBriefCard } from "./cards/TopicBriefCard";
 import { ScriptCard } from "./cards/ScriptCard";
 import { VoiceoverCard } from "./cards/VoiceoverCard";
 import { StoryboardCard } from "./cards/StoryboardCard";
-import { ClarifyingQuestionCard } from "./cards/ClarifyingQuestionCard";
 import { ImageCard } from "./cards/ImageCard";
 import { VideoPromptCard } from "./cards/VideoPromptCard";
 import { VideoCard } from "./cards/VideoCard";
 
 // Map stage name → asset card subtypes that are active at that stage
 const STAGE_ACTIVE_SUBTYPES: Record<string, string[]> = {
-  topic_brief: ["topic_brief"],
   script: ["script"],
   voiceover: ["voiceover"],
   storyboard: ["storyboard"],
-  clarifying_questions: ["clarifying_questions"],
   image_generation: ["image", "video_prompt"],
   video_generation: ["video", "video_prompt"],
 };
@@ -27,25 +23,22 @@ interface Props {
   messages: ChatMessage[];
   sessionId: string;
   currentStage?: string;
+  assemblyLocked?: boolean;
   onAction?: () => void;
   onWidgetAction?: (widgetType: string, option: string, msg: ChatMessage) => void;
 }
 
-function renderAssetCard(card: AssetCard, sessionId: string, onAction?: () => void) {
+function renderAssetCard(card: AssetCard, sessionId: string, onAction?: () => void, isActive = false) {
   const { subtype, iteration, data, status } = card;
   const props = { iteration, status, sessionId, onAction };
 
   switch (subtype) {
-    case "topic_brief":
-      return <TopicBriefCard data={data as unknown as TopicBriefData} {...props} />;
     case "script":
-      return <ScriptCard data={data as unknown as ScriptData} {...props} />;
+      return <ScriptCard data={data as unknown as ScriptData} {...props} isActive={isActive} />;
     case "voiceover":
       return <VoiceoverCard data={data as { audio_path: string; gender: string }} {...props} />;
     case "storyboard":
       return <StoryboardCard data={data as unknown as StoryboardData} {...props} />;
-    case "clarifying_questions":
-      return <ClarifyingQuestionCard data={data as unknown as ClarifyingQuestionsData} status={status} sessionId={sessionId} onAction={onAction} />;
     case "image":
       return <ImageCard data={data as Parameters<typeof ImageCard>[0]["data"]} {...props} />;
     case "video_prompt":
@@ -57,7 +50,7 @@ function renderAssetCard(card: AssetCard, sessionId: string, onAction?: () => vo
   }
 }
 
-export function ChatHistoryComponent({ messages, sessionId, currentStage, onAction, onWidgetAction }: Props) {
+export function ChatHistoryComponent({ messages, sessionId, currentStage, assemblyLocked, onAction, onWidgetAction }: Props) {
   // Only asset cards whose subtype is active at the current stage get action buttons
   const activeSubtypes = new Set(currentStage ? (STAGE_ACTIVE_SUBTYPES[currentStage] ?? []) : []);
 
@@ -75,7 +68,7 @@ export function ChatHistoryComponent({ messages, sessionId, currentStage, onActi
   messages.forEach((msg, i) => {
     if (msg.msg_type === "app_question") {
       const q = msg as { question: string; widget?: { type: string } };
-      if (q.widget?.type === "buttons") lastButtonsWidgetIdx = i;
+      if (q.widget?.type === "buttons" || q.widget?.type === "voice_select") lastButtonsWidgetIdx = i;
     }
   });
 
@@ -100,7 +93,7 @@ export function ChatHistoryComponent({ messages, sessionId, currentStage, onActi
                   <p className="text-zinc-100 text-sm">{q.question}</p>
                 </div>
                 {/* Render button options for widgets that need user selection */}
-                {widget?.type === "buttons" && widget.options && onWidgetAction && i === lastButtonsWidgetIdx && (
+                {(widget?.type === "buttons" || widget?.type === "voice_select") && widget.options && onWidgetAction && i === lastButtonsWidgetIdx && (
                   <div className="flex flex-wrap gap-2 pl-1">
                     {widget.options.map((opt) => (
                       <button
@@ -131,7 +124,18 @@ export function ChatHistoryComponent({ messages, sessionId, currentStage, onActi
             const isActive = lastCardBySubtype[card.subtype] === i;
             return (
               <div key={i} className="w-full">
-                {renderAssetCard(card, sessionId, isActive ? onAction : undefined)}
+                {renderAssetCard(
+                  card,
+                  sessionId,
+                  !assemblyLocked && (
+                    isActive ||
+                    card.status === "approved" ||
+                    card.status === "previous" ||
+                    card.status === "rejected" ||
+                    (card.subtype === "script" && card.status === "pending_approval")
+                  ) ? onAction : undefined,
+                  isActive
+                )}
               </div>
             );
           }

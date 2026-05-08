@@ -69,11 +69,9 @@ Instomater/
       Composer.tsx             # Text input at bottom
       Sidebar.tsx              # Session list sidebar
       cards/
-        TopicBriefCard.tsx
         ScriptCard.tsx
         VoiceoverCard.tsx
         StoryboardCard.tsx
-        ClarifyingQuestionCard.tsx
         ImageCard.tsx
         VideoPromptCard.tsx
         VideoCard.tsx
@@ -91,19 +89,17 @@ Instomater/
 
 | # | Stage | What happens |
 |---|-------|-------------|
-| 1 | `topic_brief` | GPT generates topic brief JSON from name + context. User approves or gives feedback. |
+| 1 | `script` | GPT generates a script directly from the user's initial person/context text. User approves or changes. |
 | 2 | `photo_upload` | User uploads a photo. No aspect ratio check (removed). Only size check (10MB max). |
-| 3 | `script` | GPT generates video script with random hook category. User approves. |
-| 4 | `voiceover` | ElevenLabs TTS generates MP3. User selects male/female voice, can regenerate. |
-| 5 | `alignment` | ElevenLabs forced alignment runs automatically on approve. No user gate. |
-| 6 | `storyboard` | GPT generates storyboard (8 scenes, durations must be in {4,6,8}s). User approves. |
-| 7 | `clarifying_questions` | GPT+vision generates 2–4 visual style questions. User answers via UI. |
-| 8 | `image_generation` | Gemini generates 8 images in chain (each builds on previous). Interleaved with video. |
-| 9 | `video_generation` | Veo generates 7 clips. Interleaved: img1→img2→clip1→img3→clip2→... |
-| 10 | `assembly` | FFmpeg assembles: normalize clips → xfade transitions → burn subtitles → layer voiceover → final encode. |
-| 11 | `final_review` | User views reel, can download, redo a clip, or re-assemble. |
+| 3 | `voiceover` | ElevenLabs TTS generates MP3. User selects female/male/custom voice ID and speed. |
+| 4 | `alignment` | ElevenLabs forced alignment runs automatically on approve. No user gate. |
+| 5 | `storyboard` | GPT generates storyboard (8 scenes, durations must be in {4,6,8}s). User approves. |
+| 6 | `image_generation` | Gemini generates two unique keyframes per clip. Interleaved with video. |
+| 7 | `video_generation` | Veo generates clips from each clip's unique start/end images. |
+| 8 | `assembly` | FFmpeg assembles: normalize clips → storyboard xfade transitions → burn subtitles → layer voiceover → final encode. |
+| 9 | `final_review` | User views final locked reel, downloads MP4, and reviews costs. |
 
-**Interleave logic:** After `img[N]` approved (N≥2): if `img[N-1]` is also approved and `clip[N-1]` not yet generated → generate `video_prompt` for clip N-1. Otherwise generate `img[N+1]`.
+**Interleave logic:** Scene `i` owns `img_{2i-1}` and `img_{2i}`. After an even image is approved, generate that clip's video prompt/video. After the clip is approved, continue to the next scene's first image.
 
 ---
 
@@ -115,7 +111,7 @@ GET    /sessions                         list sessions
 GET    /sessions/{id}                    get metadata + chat history
 DELETE /sessions/{id}                    delete session
 POST   /sessions/{id}/photo              upload photo (multipart)
-POST   /sessions/{id}/confirm-photo      confirm photo, start script gen
+POST   /sessions/{id}/photo/confirm      confirm photo after script approval
 POST   /sessions/{id}/action             unified action dispatch
 POST   /sessions/{id}/assemble           trigger FFmpeg assembly
 POST   /sessions/{id}/redo-clip/{n}      reset a clip for redo
@@ -128,8 +124,8 @@ GET    /health                           health check
 
 ```json
 {
-  "action": "approve | change | regenerate | answer | prompt_approve | prompt_change | retry | select",
-  "stage": "topic_brief | script | voiceover | storyboard | clarifying_questions | image_generation | video_generation",
+  "action": "approve | change | regenerate | restore | prompt_approve | prompt_change | prompt_restore | retry | select_voice | autopilot",
+  "stage": "script | photo_upload | voiceover | storyboard | image_generation | video_generation | assembly | settings",
   "payload": { ...stage-specific fields... }
 }
 ```
@@ -194,11 +190,9 @@ Key functions:
 
 ```typescript
 const STAGE_ACTIVE_SUBTYPES = {
-  topic_brief: ["topic_brief"],
   script: ["script"],
   voiceover: ["voiceover"],
   storyboard: ["storyboard"],
-  clarifying_questions: ["clarifying_questions"],
   image_generation: ["image", "video_prompt"],
   video_generation: ["video", "video_prompt"],
 };
@@ -265,11 +259,7 @@ The uploaded photo (Sundar Pichai) failed the old min-size guardrail and was nev
 
 **To fix the existing session:** Start a fresh session with the correct photo. The current session (`64a51886-ea95-4d3c-9b95-b7718587c461`) has clip 1 done but with the wrong person — discard it.
 
-### 3. Clarifying questions card shows blank options after answered
-
-The `ClarifyingQuestionCard` shows the option buttons even after answering because the card's `status` field stays `"pending_approval"` in chat history (the orchestrator never marks it approved). After `clarifying_questions.answer`, call `session_svc.approve_last_asset_card(session_id, "clarifying_questions")` in `_handle_clarifying_answer`.
-
-### 4. Backend tests not fully passing
+### 3. Backend tests
 
 `backend/tests/` exists with `test_sessions.py`, `test_stages.py`, `test_services.py` but tests have not been run against the current implementation. Run `pytest` from the backend directory to check.
 
@@ -295,9 +285,8 @@ GCP_SERVICE_ACCOUNT_PATH=./service-account.json
 sessions/{uuid}/
   metadata.json              # Stage, approval state, settings
   chat_history.json          # {session_id, messages: [...]}
+  script_prompt.txt          # Initial user input passed to script generation
   uploaded_photo.jpg         # Original photo
-  topic_brief_v1.json
-  topic_brief_approved.json
   script_v1.json
   script_approved.json
   voiceover_v1.mp3
@@ -305,8 +294,6 @@ sessions/{uuid}/
   alignment.json
   storyboard_v1.json
   storyboard_approved.json
-  clarifying_questions.json
-  clarifying_answers.json
   images/
     img_01_prompt_v1.txt
     img_01_v1.png
@@ -339,10 +326,10 @@ All messages stored in `chat_history.json` under `messages[]`:
 | `status_pill` | Spinner (resolved=false) or green checkmark (resolved=true) |
 | `app_question` | Bot question with optional widget (buttons, photo_upload) |
 | `user_reply` | Right-aligned user bubble |
-| `asset_card` | Rich card: topic_brief, script, voiceover, storyboard, clarifying_questions, image, video_prompt, video |
+| `asset_card` | Rich card: script, voiceover, storyboard, image, video_prompt, video, final_reel |
 | `error_card` | Red error with Retry/Change buttons |
 
-Asset card `status` field: `"pending_approval"` → shows buttons, `"approved"` → shows ✓ Approved, no buttons.
+Asset card `status` field: `"pending_approval"`, `"approved"`, `"previous"`, or `"rejected"`.
 
 ---
 
